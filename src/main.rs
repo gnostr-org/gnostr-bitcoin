@@ -49,14 +49,17 @@ fn main() -> Result<()> {
                 // In a real scenario, you might want to pass `running_conn_clone` to `connect_and_handshake`
                 // so it can gracefully exit if the main thread signals shutdown during a long connection attempt.
                 // For this example, we'll rely on the timeout to interrupt.
-                let conn_result = connect_and_handshake(DNS_SEEDS, DEFAULT_PORT, block_height_clone_for_conn, running_network_clone_for_conn);
+                let conn_result: Result<(TcpStream, String), anyhow::Error> = connect_and_handshake(DNS_SEEDS, DEFAULT_PORT, block_height_clone_for_conn, running_network_clone_for_conn);
                 let _ = tx_conn.send(conn_result);
             });
 
-            let stream_result: Result<TcpStream, anyhow::Error> = match rx_conn.recv_timeout(Duration::from_secs(10)) {
-                Ok(Ok(stream)) => {
-                    add_message("Successfully connected and handshaked.".to_string());
-                    Ok(stream)
+            let mut current_peer_addr: Option<String> = None;
+
+            let stream_result: Result<(TcpStream, String), anyhow::Error> = match rx_conn.recv_timeout(Duration::from_secs(10)) {
+                Ok(Ok((stream, peer_addr))) => {
+                    add_message(format!("Successfully connected and handshaked with {}.", peer_addr));
+                    current_peer_addr = Some(peer_addr.clone());
+                    Ok((stream, peer_addr))
                 },
                 Ok(Err(e)) => {
                     add_message(format!("[ERROR] Failed to connect and handshake: {}. Trying next peer...", e));
@@ -77,7 +80,13 @@ fn main() -> Result<()> {
                 continue; // Try connecting again
             }
 
-            let mut stream = stream_result.unwrap();
+            let (mut stream, connected_peer_addr) = stream_result.unwrap();
+            current_peer_addr = Some(connected_peer_addr);
+
+            let add_message = |msg: String| {
+                let prefix = current_peer_addr.as_ref().map_or("".to_string(), |addr| format!("[{}] ", addr));
+                messages_clone.lock().unwrap().push((format!("{}{}", prefix, msg), SystemTime::now()));
+            };
 
             // Request mempool
             add_message("Requesting mempool information...".to_string());

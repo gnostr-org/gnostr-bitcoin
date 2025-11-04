@@ -79,39 +79,40 @@ pub fn connect_and_handshake(
     default_port: u16,
     block_height: Arc<Mutex<i32>>,
     running: Arc<AtomicBool>,
-) -> Result<TcpStream> {
+) -> Result<(TcpStream, String)> {
     info!("[FLOW] Attempting TCP connection and handshake...");
 
     for seeder_domain in dns_seeds.iter() {
-        if !running.load(Ordering::SeqCst) {
-            return Err(anyhow::anyhow!("Shutdown signal received, aborting connection attempt."));
-        }
-        info!("[FLOW] Trying to connect to {}: {}", seeder_domain, default_port);
-        let mut stream = match TcpStream::connect(format!("{}:{}", seeder_domain, default_port)) {
-            Ok(s) => {
-                s.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
-                info!("[INFO] Connected successfully to {}", seeder_domain);
-                s
-            }
-            Err(e) => {
-                info!("[INFO] Failed to connect to {}: {}. Trying next...", seeder_domain, e);
-                continue;
-            }
-        };
-
-        // Attempt handshake
-        let handshake_result = (|| -> Result<()> {
-            info!("[FLOW] Performing Handshake (sending 'version').");
+                if !running.load(Ordering::SeqCst) {
+                    return Err(anyhow::anyhow!("Shutdown signal received, aborting connection attempt."));
+                }
+                info!("[FLOW] Trying to connect to {}: {}", seeder_domain, default_port);
+                let mut stream = match TcpStream::connect(format!("{}:{}", seeder_domain, default_port)) {
+                    Ok(s) => {
+                        s.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+                        info!("[INFO] Connected successfully to {}.", seeder_domain);
+                        s
+                    }
+                    Err(e) => {
+                        info!("[INFO] Failed to connect to {}: {}. Trying next...", seeder_domain, e);
+                        continue;
+                    }
+                };
+                let peer_addr = stream.peer_addr()?.to_string();
+        
+                // Attempt handshake
+                let current_block_height = block_height.clone();
+                let current_running_flag = running.clone();
+                let handshake_result = (move || -> Result<TcpStream> {
+                    info!("[FLOW] Performing Handshake (sending 'version').");
             let (version_message, _) = build_version_message()?;
             info!("[SEND] 'version' message (total size: {})", version_message.len());
-            stream.write_all(&version_message)?;
-
-            info!("[FLOW] Waiting for peer's 'version' response.");
+            stream.write_all(&version_message)?;            info!("[FLOW] Waiting for peer's 'version' response.");
             let (header, payload) = match read_message(&mut stream) {
                 Ok(msg) => msg,
                 Err(e) => {
                     error!("[ERROR] Failed to read peer\'s version message: {}", e);
-                    return Err(e);
+                    return Err(e.into());
                 }
             };
             let command = std::str::from_utf8(&header[4..16])?.trim_end_matches('\0');
@@ -127,7 +128,7 @@ pub fn connect_and_handshake(
                 let block_height_bytes: [u8; 4] = payload[offset..offset + 4].try_into().unwrap();
                 let current_height = i32::from_le_bytes(block_height_bytes);
                 info!("Current Block Height: {}", current_height);
-                *block_height.lock().unwrap() = current_height;
+                *current_block_height.lock().unwrap() = current_height;
             }
 
             let verack_message = build_verack_message()?;
@@ -139,10 +140,10 @@ pub fn connect_and_handshake(
                 Ok(_) => {{}},
                 Err(e) => {
                     error!("[ERROR] Failed to read peer\'s verack or addr message: {}", e);
-                    return Err(e);
+                    return Err(e.into());
                 }
             };
-            Ok(())
+            Ok(stream)
         })(); // Call the closure immediately
 
         match handshake_result {
@@ -150,9 +151,9 @@ pub fn connect_and_handshake(
                 error!("[ERROR] Handshake failed with {}: {}. Trying next seeder...", seeder_domain, e);
                 continue;
             }
-            Ok(_) => {
+            Ok(s) => {
                 info!("[INFO] Handshake successful with {}.", seeder_domain);
-                return Ok(stream);
+                return Ok((s, peer_addr));
             }
         }
     }
