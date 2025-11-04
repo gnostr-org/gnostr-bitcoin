@@ -83,10 +83,11 @@ impl App {
 
         while self.running.load(Ordering::SeqCst) {
             terminal.draw(|f| {
+                let size = f.size();
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(0)].as_ref())
-                    .split(f.size());
+                    .split(size);
 
                 let block_height_value = *self.block_height.lock().unwrap();
                 let block_height_widget = Paragraph::new(format!("Current Block Height: {}", block_height_value))
@@ -127,6 +128,19 @@ impl App {
 f.render_widget(peer_list_placeholder, instruction_chunks[2]);
 
                 let messages = self.messages.lock().unwrap();
+                let num_messages = messages.len();
+                let log_height = {
+                    let content_height = if num_messages == 0 { 1 } else { num_messages };
+                    let desired_height = (content_height + 2) as u16; // +2 for borders
+                    let max_height = size.height / 2;
+                    std::cmp::min(desired_height, max_height)
+                };
+
+                let log_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Length(log_height), Constraint::Min(0)].as_ref())
+                    .split(chunks[2]);
+
                 let formatted_messages: Vec<Line> = messages
                     .iter()
                     .map(|msg| Line::from(Span::raw(msg.clone())))
@@ -141,7 +155,7 @@ f.render_widget(peer_list_placeholder, instruction_chunks[2]);
                     .wrap(Wrap { trim: true })
                     .scroll((self.current_scroll_y.round() as u16, 0));
 
-                f.render_widget(paragraph, chunks[2]);
+                f.render_widget(paragraph, log_chunks[0]);
             })?;
 
             match rx.recv_timeout(tick_rate) {
