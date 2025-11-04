@@ -163,7 +163,14 @@ pub fn connect_and_handshake(
 pub fn read_message<R: Read>(stream: &mut R) -> Result<([u8; 24], Vec<u8>)> {
     info!("[FUNC] read_message: Attempting to read 24-byte header.");
     let mut header_bytes = [0u8; 24];
-    stream.read_exact(&mut header_bytes)?;
+    match stream.read_exact(&mut header_bytes) {
+        Ok(_) => debug!("[TRACE] Read 24 bytes for header."),
+        Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+            warn!("[WARN] Connection closed prematurely by peer during header read.");
+            return Err(anyhow::anyhow!("Connection closed prematurely during header read."));
+        }
+        Err(e) => return Err(e.into()),
+    }
     
     let payload_len = u32::from_le_bytes(header_bytes[16..20].try_into().unwrap());
     let command = std::str::from_utf8(&header_bytes[4..16])?.trim_end_matches('\0');
@@ -171,7 +178,14 @@ pub fn read_message<R: Read>(stream: &mut R) -> Result<([u8; 24], Vec<u8>)> {
 
     let mut payload = vec![0u8; payload_len as usize];
     if payload_len > 0 {
-        stream.read_exact(&mut payload)?;
+        match stream.read_exact(&mut payload) {
+            Ok(_) => debug!("[TRACE] Read {} bytes for payload.", payload_len),
+            Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                warn!("[WARN] Connection closed prematurely by peer during payload read. Expected {} bytes.", payload_len);
+                return Err(anyhow::anyhow!("Connection closed prematurely during payload read. Expected {} bytes.", payload_len));
+            }
+            Err(e) => return Err(e.into()),
+        }
         let expected_checksum: [u8; 4] = header_bytes[20..24].try_into().unwrap();
         let actual_checksum = calculate_checksum(&payload);
         
