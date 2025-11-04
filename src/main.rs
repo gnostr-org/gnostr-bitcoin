@@ -18,7 +18,7 @@ fn main() -> Result<()> {
     }).expect("Error setting Ctrl-C handler");
 
     // 1. Setup shared state for messages and block height
-    let messages = Arc::new(Mutex::new(Vec::new()));
+    let messages = Arc::new(Mutex::new(Vec::<(String, SystemTime)>::new()));
     let block_height = Arc::new(Mutex::new(0));
 
     // Clone messages for the network thread
@@ -29,7 +29,7 @@ fn main() -> Result<()> {
     // 2. Spawn a thread for network operations
     let _network_thread_handle = std::thread::spawn(move || {
         let add_message = |msg: String| {
-            messages_clone.lock().unwrap().push(msg);
+            messages_clone.lock().unwrap().push((msg, SystemTime::now()));
         };
 
         add_message("Starting Bitcoin P2P client...".to_string());

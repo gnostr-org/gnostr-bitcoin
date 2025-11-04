@@ -1,4 +1,5 @@
-use std::{io, sync::{mpsc, Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
+use std::{io, sync::{mpsc, Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant, SystemTime}};
+use time::{OffsetDateTime, macros::format_description};
 use crossterm::{
     event::{self, Event as CEvent, KeyCode},
     execute,
@@ -26,7 +27,7 @@ pub enum FocusedWidget {
 }
 
 pub struct App {
-    pub messages: Arc<Mutex<Vec<String>>>,
+    pub messages: Arc<Mutex<Vec<(String, SystemTime)>>>,
     pub scroll_state: u16,
     pub running: Arc<AtomicBool>,
     pub block_height: Arc<Mutex<i32>>,
@@ -40,7 +41,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(messages: Arc<Mutex<Vec<String>>>, running: Arc<AtomicBool>, block_height: Arc<Mutex<i32>>) -> App {
+    pub fn new(messages: Arc<Mutex<Vec<(String, SystemTime)>>>, running: Arc<AtomicBool>, block_height: Arc<Mutex<i32>>) -> App {
         App {
             messages,
             scroll_state: 0,
@@ -153,7 +154,11 @@ f.render_widget(peer_list_placeholder, instruction_chunks[2]);
 
                     let formatted_messages: Vec<Line> = messages
                         .iter()
-                        .map(|msg| Line::from(Span::raw(msg.clone())))
+                        .map(|(msg, timestamp)| {
+                            let offset_datetime: OffsetDateTime = timestamp.clone().into();
+                            let format = format_description!("[hour]:[minute]:[second]");
+                            Line::from(Span::raw(format!("[{}] {}", offset_datetime.format(&format).unwrap_or_default(), msg)))
+                        })
                         .collect();
 
                     let paragraph = Paragraph::new(formatted_messages)

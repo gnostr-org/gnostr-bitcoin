@@ -17,3 +17,4 @@ log = "0.4.21"
 simplelog = "0.12.2"
 dirs = "5.0.0"
 ctrlc = { version = "3.4.4", features = ["termination"] }
+time = { version = "0.3", features = ["macros", "formatting"] }
