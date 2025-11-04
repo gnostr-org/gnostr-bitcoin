@@ -66,7 +66,7 @@ impl App {
             terminal.draw(|f| {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(0)].as_ref())
+                    .constraints([Constraint::Length(3), Constraint::Length(1), Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)].as_ref())
                     .split(f.size());
 
                 let block_height_value = *self.block_height.lock().unwrap();
@@ -75,10 +75,20 @@ impl App {
                     .style(Style::default().fg(Color::Cyan));
                 f.render_widget(block_height_widget, chunks[0]);
 
-                let instructions_widget = Paragraph::new("Press 'q' to quit, 'Up'/'Down' to scroll.")
+                let instruction_quit = Paragraph::new("Press 'q' to quit.")
                     .block(Block::default().borders(Borders::ALL).title("Instructions"))
                     .style(Style::default().fg(Color::Yellow));
-                f.render_widget(instructions_widget, chunks[1]);
+                f.render_widget(instruction_quit, chunks[1]);
+
+                let instruction_scroll_up = Paragraph::new("Press 'Up' to scroll up.")
+                    .block(Block::default().borders(Borders::ALL).title(""))
+                    .style(Style::default().fg(Color::Yellow));
+                f.render_widget(instruction_scroll_up, chunks[2]);
+
+                let instruction_scroll_down = Paragraph::new("Press 'Down' to scroll down.")
+                    .block(Block::default().borders(Borders::ALL).title(""))
+                    .style(Style::default().fg(Color::Yellow));
+                f.render_widget(instruction_scroll_down, chunks[3]);
 
                 let messages = self.messages.lock().unwrap();
                 let formatted_messages: Vec<Line> = messages
@@ -92,7 +102,7 @@ impl App {
                     .wrap(Wrap { trim: true })
                     .scroll((self.scroll_state, 0));
 
-                f.render_widget(paragraph, chunks[2]);
+                f.render_widget(paragraph, chunks[4]);
             })?;
 
             match rx.recv_timeout(tick_rate) {
