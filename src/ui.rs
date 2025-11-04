@@ -155,6 +155,16 @@ impl App {
                             self.scroll_state = self.scroll_state.saturating_sub(1);
                         }
                     },
+                    KeyCode::Left => {
+                        if let FocusedWidget::Instructions = self.focused_widget {
+                            self.focused_widget = FocusedWidget::BlockHeight;
+                        }
+                    },
+                    KeyCode::Right => {
+                        if let FocusedWidget::Instructions = self.focused_widget {
+                            self.focused_widget = FocusedWidget::Log;
+                        }
+                    },
                     _ => {},
                 },
                 Ok(Event::Tick) => {},
