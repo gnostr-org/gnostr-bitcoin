@@ -66,7 +66,7 @@ impl App {
             terminal.draw(|f| {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(3), Constraint::Min(0)].as_ref())
+                    .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(0)].as_ref())
                     .split(f.size());
 
                 let block_height_value = *self.block_height.lock().unwrap();
@@ -74,6 +74,11 @@ impl App {
                     .block(Block::default().borders(Borders::ALL).title("Block Height"))
                     .style(Style::default().fg(Color::Cyan));
                 f.render_widget(block_height_widget, chunks[0]);
+
+                let instructions_widget = Paragraph::new("Press 'q' to quit, 'Up'/'Down' to scroll.")
+                    .block(Block::default().borders(Borders::ALL).title("Instructions"))
+                    .style(Style::default().fg(Color::Yellow));
+                f.render_widget(instructions_widget, chunks[1]);
 
                 let messages = self.messages.lock().unwrap();
                 let formatted_messages: Vec<Line> = messages
@@ -87,7 +92,7 @@ impl App {
                     .wrap(Wrap { trim: true })
                     .scroll((self.scroll_state, 0));
 
-                f.render_widget(paragraph, chunks[1]);
+                f.render_widget(paragraph, chunks[2]);
             })?;
 
             match rx.recv_timeout(tick_rate) {
