@@ -32,7 +32,7 @@ pub struct App {
     pub scroll_state: u16,
     pub running: Arc<AtomicBool>,
     pub block_height: Arc<Mutex<i32>>,
-    pub peer_list: Arc<Mutex<Vec<String>>>,
+    pub peer_list: Arc<Mutex<Vec<(String, u64, u64)>>>,
     pub focused_widget: FocusedWidget,
     last_user_input_time: Instant,
     auto_scroll_enabled: bool,
@@ -43,7 +43,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(messages: Arc<Mutex<Vec<(String, SystemTime)>>>, running: Arc<AtomicBool>, block_height: Arc<Mutex<i32>>, peer_list: Arc<Mutex<Vec<String>>>) -> App {
+    pub fn new(messages: Arc<Mutex<Vec<(String, SystemTime)>>>, running: Arc<AtomicBool>, block_height: Arc<Mutex<i32>>, peer_list: Arc<Mutex<Vec<(String, u64, u64)>>>) -> App {
         App {
             messages,
             scroll_state: 0,
@@ -134,7 +134,7 @@ impl App {
                 // GEMINI - each peer in the list should be selectable which reveals other traits
                 // common to the bitcoin core peer list detail view
                 let peer_list_content: Vec<Line> = self.peer_list.lock().unwrap().iter()
-                    .map(|peer| Line::from(Span::raw(format!("- {}", peer))))
+                    .map(|(peer_addr, inbound, outbound)| Line::from(Span::raw(format!("{} In: {} B, Out: {} B", peer_addr, inbound, outbound))))
                     .collect();
 
                 let peer_list_widget = Paragraph::new(peer_list_content)

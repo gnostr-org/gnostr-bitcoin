@@ -1,4 +1,4 @@
-pub mod ui;
+
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
@@ -17,8 +17,16 @@ pub const SERVICES: u64 = 1;
 use anyhow::Result;
 
 pub const DNS_SEEDS: &[&str] = &[
-    "seed.bitcoin.sipa.be", "dnsseed.bluematt.me", "dnsseed.bitcoin.dashjr.org",
-    "seed.btc.petertodd.org", "dnsseed.emzy.de", "seed.bitcoin.wiz.biz",
+    "dnsseed.bluematt.me",
+    "dnsseed.bitcoin.dashjr-list-of-p2p-nodes.us",
+    "seed.bitcoinstats.com",
+    "seed.btc.petertodd.net",
+    "seed.bitcoin.sprovoost.nl",
+    "dnsseed.emzy.de",
+    "seed.bitcoin.wiz.biz",
+    "seed.bitcoin.sipa.be",
+    "seed.bitcoin.jonasschnelli.ch",
+    "seed.mainnet.achownodes.xyz",
 ];
 pub fn init_logger() -> Result<()> {
     let home_dir = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
@@ -79,31 +87,41 @@ pub fn connect_and_handshake(
     default_port: u16,
     block_height: Arc<Mutex<i32>>,
     running: Arc<AtomicBool>,
-) -> Result<(TcpStream, String)> {
+    target_peer_addr: Option<String>,
+) -> Result<(TcpStream, String, Vec<String>)> {
     info!("[FLOW] Attempting TCP connection and handshake...");
 
+    let mut addresses_to_try: Vec<String> = Vec::new();
+    if let Some(target) = target_peer_addr {
+        addresses_to_try.push(target);
+    }
     for seeder_domain in dns_seeds.iter() {
+        addresses_to_try.push(format!("{}:{}", seeder_domain, default_port));
+    }
+
+    for addr_to_try in addresses_to_try.iter() {
                 if !running.load(Ordering::SeqCst) {
                     return Err(anyhow::anyhow!("Shutdown signal received, aborting connection attempt."));
                 }
-                info!("[FLOW] Trying to connect to {}: {}", seeder_domain, default_port);
-                let mut stream = match TcpStream::connect(format!("{}:{}", seeder_domain, default_port)) {
+                info!("[FLOW] Trying to connect to {}", addr_to_try);
+                let mut stream = match TcpStream::connect(addr_to_try) {
                     Ok(s) => {
                         s.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
-                        info!("[INFO] Connected successfully to {}.", seeder_domain);
+                        info!("[INFO] Connected successfully to {}.", addr_to_try);
                         s
                     }
                     Err(e) => {
-                        info!("[INFO] Failed to connect to {}: {}. Trying next...", seeder_domain, e);
+                        info!("[INFO] Failed to connect to {}: {}. Trying next...", addr_to_try, e);
                         continue;
                     }
                 };
                 let peer_addr = stream.peer_addr()?.to_string();
+                let peer_addr_for_closure = peer_addr.clone();
         
                 // Attempt handshake
                 let current_block_height = block_height.clone();
-                let current_running_flag = running.clone();
-                let handshake_result = (move || -> Result<TcpStream> {
+                let _current_running_flag = running.clone();
+                let handshake_result = (move || -> Result<(TcpStream, String, Vec<String>)> {
                     info!("[FLOW] Performing Handshake (sending 'version').");
             let (version_message, _) = build_version_message()?;
             info!("[SEND] 'version' message (total size: {})", version_message.len());
@@ -143,17 +161,72 @@ pub fn connect_and_handshake(
                     return Err(e.into());
                 }
             };
-            Ok(stream)
+
+            // Request peer addresses
+            let getaddr_message = build_getaddr_message()?;
+            info!("[SEND] 'getaddr' message (size: {})", getaddr_message.len());
+            stream.write_all(&getaddr_message)?;
+
+            info!("[FLOW] Waiting for peer's 'addr' response.");
+            let (header, payload) = match read_message(&mut stream) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    error!("[ERROR] Failed to read peer\'s addr message: {}", e);
+                    return Err(e.into());
+                }
+            };
+            let command = std::str::from_utf8(&header[4..16])?.trim_end_matches('\0');
+            info!("[RECEIVED] Command: '{}'", command);
+
+            let mut discovered_peers: Vec<String> = Vec::new();
+            if command == "addr" {
+                info!("[INFO] Received 'addr' message. Parsing payload.");
+                // Parse the 'addr' payload to extract peer addresses
+                let mut offset = 0;
+                let (count, bytes_read) = payload.read_varint_and_advance(offset)?;
+                offset += bytes_read;
+                info!("[TRACE] Number of addresses in 'addr' message: {}. New offset: {}", count, offset);
+
+                for _ in 0..count {
+                    if payload.len() < offset + 30 { // 4 timestamp + 8 services + 16 IPv6 + 2 port
+                        warn!("[WARN] Incomplete address entry in 'addr' message.");
+                        break;
+                    }
+                    // Skip timestamp (4 bytes)
+                    offset += 4;
+                    // Skip services (8 bytes)
+                    offset += 8;
+                    // IPv6 address (16 bytes) - last 4 bytes are IPv4 if it's an IPv4-mapped IPv6 address
+                    let ip_bytes = &payload[offset..offset + 16];
+                    offset += 16;
+                    let port_bytes: [u8; 2] = payload[offset..offset + 2].try_into().unwrap();
+                    offset += 2;
+
+                    let ip_addr = if ip_bytes[0..12] == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff] {
+                        // IPv4-mapped IPv6 address
+                        format!("{}.{}.{}.{}", ip_bytes[12], ip_bytes[13], ip_bytes[14], ip_bytes[15])
+                    } else {
+                        // IPv6 address (simplified representation for now)
+                        // For a full implementation, you'd parse the IPv6 bytes properly
+                        format!("{:?}", ip_bytes)
+                    };
+                    let port = u16::from_be_bytes(port_bytes);
+                    let peer_address = format!("{}:{}", ip_addr, port);
+                    discovered_peers.push(peer_address);
+                }
+                info!("[INFO] Discovered {} peers from 'addr' message.", discovered_peers.len());
+            }
+            Ok((stream, peer_addr_for_closure, discovered_peers))
         })(); // Call the closure immediately
 
         match handshake_result {
             Err(e) => {
-                error!("[ERROR] Handshake failed with {}: {}. Trying next seeder...", seeder_domain, e);
+                error!("[ERROR] Handshake failed with {}: {}. Trying next seeder...", peer_addr, e);
                 continue;
             }
-            Ok(s) => {
-                info!("[INFO] Handshake successful with {}.", seeder_domain);
-                return Ok((s, peer_addr));
+            Ok((s, peer_addr, peers)) => {
+                info!("[INFO] Handshake successful with {}. Discovered {} peers.", peer_addr, peers.len());
+                return Ok((s, peer_addr, peers));
             }
         }
     }
@@ -310,6 +383,24 @@ pub fn build_pong_message(nonce: [u8; 8]) -> Result<Vec<u8>> {
     raw_message.write_all(&payload)?;
     
     info!("[FUNC] build_pong_message: Done.");
+    Ok(raw_message)
+}
+
+pub fn build_getaddr_message() -> Result<Vec<u8>> {
+    info!("[FUNC] build_getaddr_message: Assembling message (Zero payload).");
+    let payload = Vec::new();
+    let payload_len = 0;
+    let checksum = calculate_checksum(&payload);
+
+    let mut raw_message = Vec::new();
+    raw_message.write_all(&MAGIC_BYTES)?;
+    let mut command_bytes = [0u8; 12];
+    command_bytes[0..7].copy_from_slice(b"getaddr");
+    raw_message.write_all(&command_bytes)?;
+    raw_message.write_all(&(payload_len as u32).to_le_bytes())?;
+    raw_message.write_all(&checksum)?;
+
+    info!("[FUNC] build_getaddr_message: Done.");
     Ok(raw_message)
 }
 
