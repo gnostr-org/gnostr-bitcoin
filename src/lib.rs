@@ -127,11 +127,11 @@ pub fn connect_and_handshake(
             info!("[SEND] 'verack' message (size: {})", verack_message.len());
             stream.write_all(&verack_message)?;
 
-            println!("[FLOW] Waiting for peer's 'verack' or 'addr' response.");
+            info!("[FLOW] Waiting for peer's 'verack' or 'addr' response.");
             match read_message(&mut stream) {
                 Ok(_) => {{}},
                 Err(e) => {
-                    println!("[ERROR] Failed to read peer\'s verack or addr message: {}", e);
+                    error!("[ERROR] Failed to read peer\'s verack or addr message: {}", e);
                     return Err(e);
                 }
             };
@@ -140,11 +140,11 @@ pub fn connect_and_handshake(
 
         match handshake_result {
             Err(e) => {
-                println!("[ERROR] Handshake failed with {}: {}. Trying next seeder...", seeder_domain, e);
+                error!("[ERROR] Handshake failed with {}: {}. Trying next seeder...", seeder_domain, e);
                 continue;
             }
             Ok(_) => {
-                println!("[INFO] Handshake successful with {}.", seeder_domain);
+                info!("[INFO] Handshake successful with {}.", seeder_domain);
                 return Ok(stream);
             }
         }
@@ -158,13 +158,13 @@ pub fn connect_and_handshake(
 // ----------------------------------------------------------------------
 
 pub fn read_message<R: Read>(stream: &mut R) -> Result<([u8; 24], Vec<u8>), Box<dyn std::error::Error>> {
-    println!("[FUNC] read_message: Attempting to read 24-byte header.");
+    info!("[FUNC] read_message: Attempting to read 24-byte header.");
     let mut header_bytes = [0u8; 24];
     stream.read_exact(&mut header_bytes)?;
     
     let payload_len = u32::from_le_bytes(header_bytes[16..20].try_into().unwrap());
     let command = std::str::from_utf8(&header_bytes[4..16])?.trim_end_matches('\0');
-    println!("[TRACE] Header read. Command: '{}', Payload Length: {} bytes.", command, payload_len);
+    info!("[TRACE] Header read. Command: '{}', Payload Length: {} bytes.", command, payload_len);
 
     let mut payload = vec![0u8; payload_len as usize];
     if payload_len > 0 {
@@ -173,17 +173,17 @@ pub fn read_message<R: Read>(stream: &mut R) -> Result<([u8; 24], Vec<u8>), Box<
         let actual_checksum = calculate_checksum(&payload);
         
         if expected_checksum != actual_checksum {
-            println!("[WARN] Checksum mismatch! Expected: {:?}, Actual: {:?}", expected_checksum, actual_checksum);
+            warn!("[WARN] Checksum mismatch! Expected: {:?}, Actual: {:?}", expected_checksum, actual_checksum);
         }
     }
     
-    println!("[FUNC] read_message: Finished reading message.");
+    info!("[FUNC] read_message: Finished reading message.");
     Ok((header_bytes, payload))
 }
 
 
 pub fn build_version_message() -> Result<(Vec<u8>, usize), Box<dyn std::error::Error>> {
-    println!("[FUNC] build_version_message: Assembling payload.");
+    info!("[FUNC] build_version_message: Assembling payload.");
     let mut payload = Vec::new();
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
     
