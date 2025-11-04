@@ -3,6 +3,13 @@ name = "gnostr-bitcoin"
 version = "0.1.0-1910.922219.839510"
 edition = "2024"
 
+[lib]
+name = "gnostr_bitcoin"
+path = "src/lib.rs"
+
 [dependencies]
 rand = "0.9.2"
 sha2 = "0.10.9"
+ratatui = "0.26.1"
+crossterm = "0.27.0"
+anyhow = "1.0.86"
