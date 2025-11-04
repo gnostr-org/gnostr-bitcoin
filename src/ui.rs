@@ -47,7 +47,6 @@ impl App {
             block_height,
             focused_widget: FocusedWidget::Log,
             last_user_input_time: Instant::now(),
-            auto_scroll_delay: Duration::from_secs(5),
             auto_scroll_enabled: true,
             current_scroll_y: 0.0, // Initialize animated scroll position
             scroll_animation_speed: 0.1, // Initialize animation speed
