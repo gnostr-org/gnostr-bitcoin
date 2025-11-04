@@ -8,6 +8,7 @@ use log::{info, error, warn, debug, LevelFilter};
 use simplelog::{CombinedLogger, WriteLogger, Config};
 use std::fs::{self, File};
 use anyhow::Result;
+use std::sync::{Arc, Mutex};
 
 // --- Constants ---
 pub const MAGIC_BYTES: [u8; 4] = [0xF9, 0xBE, 0xB4, 0xD9]; // Mainnet
@@ -76,6 +77,7 @@ impl VarIntReader for [u8] {
 pub fn connect_and_handshake(
     dns_seeds: &[&str],
     default_port: u16,
+    block_height: Arc<Mutex<i32>>,
 ) -> Result<TcpStream> {
     info!("[FLOW] Attempting TCP connection and handshake...");
 
@@ -119,7 +121,9 @@ pub fn connect_and_handshake(
                 info!("[TRACE] User Agent length: {} bytes. New offset: {}", user_agent_len, offset);
 
                 let block_height_bytes: [u8; 4] = payload[offset..offset + 4].try_into().unwrap();
-                info!("Current Block Height: {}", i32::from_le_bytes(block_height_bytes));
+                let current_height = i32::from_le_bytes(block_height_bytes);
+                info!("Current Block Height: {}", current_height);
+                *block_height.lock().unwrap() = current_height;
             }
 
             let verack_message = build_verack_message()?;

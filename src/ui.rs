@@ -22,14 +22,16 @@ pub struct App {
     pub messages: Arc<Mutex<Vec<String>>>,
     pub scroll_state: u16,
     pub running: Arc<AtomicBool>,
+    pub block_height: Arc<Mutex<i32>>,
 }
 
 impl App {
-    pub fn new(messages: Arc<Mutex<Vec<String>>>, running: Arc<AtomicBool>) -> App {
+    pub fn new(messages: Arc<Mutex<Vec<String>>>, running: Arc<AtomicBool>, block_height: Arc<Mutex<i32>>) -> App {
         App {
             messages,
             scroll_state: 0,
             running,
+            block_height,
         }
     }
 
@@ -64,8 +66,14 @@ impl App {
             terminal.draw(|f| {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Min(0)].as_ref())
+                    .constraints([Constraint::Length(3), Constraint::Min(0)].as_ref())
                     .split(f.size());
+
+                let block_height_value = *self.block_height.lock().unwrap();
+                let block_height_widget = Paragraph::new(format!("Current Block Height: {}", block_height_value))
+                    .block(Block::default().borders(Borders::ALL).title("Block Height"))
+                    .style(Style::default().fg(Color::Cyan));
+                f.render_widget(block_height_widget, chunks[0]);
 
                 let messages = self.messages.lock().unwrap();
                 let formatted_messages: Vec<Line> = messages
@@ -79,7 +87,7 @@ impl App {
                     .wrap(Wrap { trim: true })
                     .scroll((self.scroll_state, 0));
 
-                f.render_widget(paragraph, chunks[0]);
+                f.render_widget(paragraph, chunks[1]);
             })?;
 
             match rx.recv_timeout(tick_rate) {

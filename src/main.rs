@@ -1,5 +1,7 @@
 use gnostr_bitcoin::ui::{init_tui, restore_tui, App};
 use gnostr_bitcoin::{connect_and_handshake, build_mempool_message, build_ping_message, build_pong_message, read_message, DNS_SEEDS, DEFAULT_PORT, init_logger};
+use std::io::Write;
+use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -15,12 +17,14 @@ fn main() -> Result<()> {
         r.store(false, Ordering::SeqCst);
     }).expect("Error setting Ctrl-C handler");
 
-    // 1. Setup shared state for messages
+    // 1. Setup shared state for messages and block height
     let messages = Arc::new(Mutex::new(Vec::new()));
+    let block_height = Arc::new(Mutex::new(0));
 
     // Clone messages for the network thread
     let messages_clone = Arc::clone(&messages);
     let running_network_clone = Arc::clone(&running);
+    let block_height_clone = Arc::clone(&block_height);
 
     // 2. Spawn a thread for network operations
     let _network_thread_handle = std::thread::spawn(move || {
@@ -32,7 +36,7 @@ fn main() -> Result<()> {
 
         add_message("Starting Bitcoin P2P client...".to_string());
 
-        match connect_and_handshake(DNS_SEEDS, DEFAULT_PORT) {
+        match connect_and_handshake(DNS_SEEDS, DEFAULT_PORT, block_height_clone) {
             Ok(mut stream) => {
                 add_message("Successfully connected and handshaked.".to_string());
 
@@ -181,7 +185,7 @@ fn main() -> Result<()> {
     let mut terminal = init_tui()?;
 
     // 4. Create App instance
-    let mut app = App::new(Arc::clone(&messages), Arc::clone(&running));
+    let mut app = App::new(Arc::clone(&messages), Arc::clone(&running), Arc::clone(&block_height));
 
     // 5. Run the TUI application loop
     // The `App::run` method will draw messages from `app.messages` and handle user input.
