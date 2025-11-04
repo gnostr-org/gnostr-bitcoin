@@ -18,6 +18,7 @@ pub enum Event<I> {
     Tick,
 }
 
+#[derive(PartialEq)]
 pub enum FocusedWidget {
     BlockHeight,
     Instructions,
@@ -30,6 +31,9 @@ pub struct App {
     pub running: Arc<AtomicBool>,
     pub block_height: Arc<Mutex<i32>>,
     pub focused_widget: FocusedWidget,
+    last_user_input_time: Instant,
+    auto_scroll_delay: Duration,
+    auto_scroll_enabled: bool,
 }
 
 impl App {
@@ -40,6 +44,9 @@ impl App {
             running,
             block_height,
             focused_widget: FocusedWidget::Log,
+            last_user_input_time: Instant::now(),
+            auto_scroll_delay: Duration::from_secs(5),
+            auto_scroll_enabled: true,
         }
     }
 
@@ -134,40 +141,62 @@ impl App {
             })?;
 
             match rx.recv_timeout(tick_rate) {
-                Ok(Event::Input(event)) => match event.code {
-                    KeyCode::Char('q') => {
-                        self.running.store(false, Ordering::SeqCst);
-                    },
-                    KeyCode::Tab => {
-                        self.focused_widget = match self.focused_widget {
-                            FocusedWidget::BlockHeight => FocusedWidget::Instructions,
-                            FocusedWidget::Instructions => FocusedWidget::Log,
-                            FocusedWidget::Log => FocusedWidget::BlockHeight,
-                        };
-                    },
-                    KeyCode::Down => {
-                        if let FocusedWidget::Log = self.focused_widget {
-                            self.scroll_state = self.scroll_state.saturating_add(1);
-                        }
-                    },
-                    KeyCode::Up => {
-                        if let FocusedWidget::Log = self.focused_widget {
-                            self.scroll_state = self.scroll_state.saturating_sub(1);
-                        }
-                    },
-                    KeyCode::Left => {
-                        if let FocusedWidget::Instructions = self.focused_widget {
-                            self.focused_widget = FocusedWidget::BlockHeight;
-                        }
-                    },
-                    KeyCode::Right => {
-                        if let FocusedWidget::Instructions = self.focused_widget {
-                            self.focused_widget = FocusedWidget::Log;
-                        }
-                    },
-                    _ => {},
+                Ok(Event::Input(event)) => {
+                    self.last_user_input_time = Instant::now(); // Update timer on any input
+                    match event.code {
+                        KeyCode::Char('q') => {
+                            self.running.store(false, Ordering::SeqCst);
+                        },
+                        KeyCode::Tab => {
+                            self.focused_widget = match self.focused_widget {
+                                FocusedWidget::BlockHeight => FocusedWidget::Instructions,
+                                FocusedWidget::Instructions => FocusedWidget::Log,
+                                FocusedWidget::Log => FocusedWidget::BlockHeight,
+                            };
+                        },
+                        KeyCode::Down => {
+                            if let FocusedWidget::Log = self.focused_widget {
+                                self.scroll_state = self.scroll_state.saturating_add(1);
+                                self.auto_scroll_enabled = false; // User manually scrolled
+                            }
+                        },
+                        KeyCode::Up => {
+                            if let FocusedWidget::Log = self.focused_widget {
+                                self.scroll_state = self.scroll_state.saturating_sub(1);
+                                self.auto_scroll_enabled = false; // User manually scrolled
+                            }
+                        },
+                        KeyCode::Left => {
+                            if let FocusedWidget::Instructions = self.focused_widget {
+                                self.focused_widget = FocusedWidget::BlockHeight;
+                            }
+                        },
+                        KeyCode::Right => {
+                            if let FocusedWidget::Instructions = self.focused_widget {
+                                self.focused_widget = FocusedWidget::Log;
+                            }
+                        },
+                        _ => {},
+                    }
                 },
-                Ok(Event::Tick) => {},
+                Ok(Event::Tick) => {
+                    // Check for auto-scroll
+                    if self.focused_widget == FocusedWidget::Log && self.auto_scroll_enabled {
+                        let elapsed = Instant::now().duration_since(self.last_user_input_time);
+                        if elapsed > self.auto_scroll_delay {
+                            let messages_count = self.messages.lock().unwrap().len();
+                            if messages_count > 0 {
+                                // Scroll to the bottom, capped by u16::MAX
+                                let target_scroll_state = std::cmp::min(messages_count as u16, u16::MAX);
+                                if self.scroll_state != target_scroll_state {
+                                    self.scroll_state = target_scroll_state;
+                                }
+                            } else {
+                                self.scroll_state = 0;
+                            }
+                        }
+                    }
+                },
                 Err(mpsc::RecvTimeoutError::Timeout) => {},
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     self.running.store(false, Ordering::SeqCst);
