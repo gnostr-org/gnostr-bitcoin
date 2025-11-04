@@ -98,7 +98,7 @@ impl App {
 
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(3), Constraint::Length(3), log_constraint].as_ref())
+                    .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(0), log_constraint].as_ref())
                     .split(size);
 
                 let block_height_value = *self.block_height.lock().unwrap();
@@ -112,7 +112,7 @@ impl App {
 
                 let instruction_chunks = Layout::default()
                     .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(33), Constraint::Percentage(33), Constraint::Percentage(34)].as_ref())
+                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
                     .split(chunks[1]);
 
                 let instruction_quit = Paragraph::new("Press 'q' to quit.")
@@ -143,7 +143,7 @@ impl App {
                         _ => Style::default().fg(Color::Yellow),
                     }))
                     .style(Style::default().fg(Color::Yellow));
-                f.render_widget(peer_list_widget, instruction_chunks[2]);
+                f.render_widget(peer_list_widget, chunks[2]);
 
                 if self.log_visible {
                     let messages = self.messages.lock().unwrap();
