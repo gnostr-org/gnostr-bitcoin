@@ -118,13 +118,13 @@ impl App {
                     .style(Style::default().fg(Color::Yellow));
                 f.render_widget(instruction_scroll_up, instruction_chunks[1]);
 
-                let instruction_scroll_down = Paragraph::new("Press 'Down' to scroll down.")
-                    .block(Block::default().borders(Borders::ALL).title("").border_style(match self.focused_widget {
-                        FocusedWidget::Instructions => Style::default().fg(Color::Magenta),
-                        _ => Style::default().fg(Color::Yellow),
-                    }))
-                    .style(Style::default().fg(Color::Yellow));
-                f.render_widget(instruction_scroll_down, instruction_chunks[2]);
+                let peer_list_placeholder = Paragraph::new("Peer List:\n- 127.0.0.1:8333\n- ...")
+    .block(Block::default().borders(Borders::ALL).title("Peers").border_style(match self.focused_widget {
+        FocusedWidget::Instructions => Style::default().fg(Color::Magenta),
+        _ => Style::default().fg(Color::Yellow),
+    }))
+    .style(Style::default().fg(Color::Yellow));
+f.render_widget(peer_list_placeholder, instruction_chunks[2]);
 
                 let messages = self.messages.lock().unwrap();
                 let formatted_messages: Vec<Line> = messages
