@@ -90,15 +90,9 @@ impl App {
         while self.running.load(Ordering::SeqCst) {
             terminal.draw(|f| {
                 let size = f.size();
-                let log_constraint = if self.log_visible {
-                    Constraint::Min(0)
-                } else {
-                    Constraint::Length(0)
-                };
-
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(0), log_constraint].as_ref())
+                    .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(0)].as_ref())
                     .split(size);
 
                 let block_height_value = *self.block_height.lock().unwrap();
@@ -131,6 +125,11 @@ impl App {
                     .style(Style::default().fg(Color::Yellow));
                 f.render_widget(instruction_scroll_up, instruction_chunks[1]);
 
+                let bottom_half_chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                    .split(chunks[2]);
+
                 // GEMINI - each peer in the list should be selectable which reveals other traits
                 // common to the bitcoin core peer list detail view
                 let peer_list_content: Vec<Line> = self.peer_list.lock().unwrap().iter()
@@ -143,23 +142,18 @@ impl App {
                         _ => Style::default().fg(Color::Yellow),
                     }))
                     .style(Style::default().fg(Color::Yellow));
-                f.render_widget(peer_list_widget, chunks[2]);
+                f.render_widget(peer_list_widget, bottom_half_chunks[0]);
 
                 if self.log_visible {
                     let messages = self.messages.lock().unwrap();
                     let num_messages = messages.len();
+                    let log_area_height = bottom_half_chunks[1].height;
                     let log_height = {
                         let content_height = if num_messages == 0 { 1 } else { num_messages };
                         let desired_height = (content_height + 2) as u16; // +2 for borders
-                        let max_height = size.height / 2;
-                        std::cmp::min(desired_height, max_height)
+                        std::cmp::min(desired_height, log_area_height)
                     };
                     self.log_widget_height = log_height;
-
-                    let log_chunks = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([Constraint::Length(log_height), Constraint::Min(0)].as_ref())
-                        .split(chunks[2]);
 
                     let formatted_messages: Vec<Line> = messages
                         .iter()
@@ -179,7 +173,7 @@ impl App {
                         .wrap(Wrap { trim: true })
                         .scroll((self.current_scroll_y.round() as u16, 0));
 
-                    f.render_widget(paragraph, log_chunks[0]);
+                    f.render_widget(paragraph, bottom_half_chunks[1]);
                 }
             })?;
 
