@@ -36,6 +36,7 @@ pub struct App {
     current_scroll_y: f32, // Animated scroll position
     scroll_animation_speed: f32, // Controls animation speed
     log_widget_height: u16,
+    pub log_visible: bool,
 }
 
 impl App {
@@ -51,6 +52,7 @@ impl App {
             current_scroll_y: 0.0, // Initialize animated scroll position
             scroll_animation_speed: 0.1, // Initialize animation speed
             log_widget_height: 0,
+            log_visible: true,
         }
     }
 
@@ -84,9 +86,15 @@ impl App {
         while self.running.load(Ordering::SeqCst) {
             terminal.draw(|f| {
                 let size = f.size();
+                let log_constraint = if self.log_visible {
+                    Constraint::Min(0)
+                } else {
+                    Constraint::Length(0)
+                };
+
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(0)].as_ref())
+                    .constraints([Constraint::Length(3), Constraint::Length(3), log_constraint].as_ref())
                     .split(size);
 
                 let block_height_value = *self.block_height.lock().unwrap();
@@ -127,36 +135,38 @@ impl App {
     .style(Style::default().fg(Color::Yellow));
 f.render_widget(peer_list_placeholder, instruction_chunks[2]);
 
-                let messages = self.messages.lock().unwrap();
-                let num_messages = messages.len();
-                let log_height = {
-                    let content_height = if num_messages == 0 { 1 } else { num_messages };
-                    let desired_height = (content_height + 2) as u16; // +2 for borders
-                    let max_height = size.height / 2;
-                    std::cmp::min(desired_height, max_height)
-                };
-                self.log_widget_height = log_height;
+                if self.log_visible {
+                    let messages = self.messages.lock().unwrap();
+                    let num_messages = messages.len();
+                    let log_height = {
+                        let content_height = if num_messages == 0 { 1 } else { num_messages };
+                        let desired_height = (content_height + 2) as u16; // +2 for borders
+                        let max_height = size.height / 2;
+                        std::cmp::min(desired_height, max_height)
+                    };
+                    self.log_widget_height = log_height;
 
-                let log_chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(log_height), Constraint::Min(0)].as_ref())
-                    .split(chunks[2]);
+                    let log_chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Length(log_height), Constraint::Min(0)].as_ref())
+                        .split(chunks[2]);
 
-                let formatted_messages: Vec<Line> = messages
-                    .iter()
-                    .map(|msg| Line::from(Span::raw(msg.clone())))
-                    .collect();
+                    let formatted_messages: Vec<Line> = messages
+                        .iter()
+                        .map(|msg| Line::from(Span::raw(msg.clone())))
+                        .collect();
 
-                let paragraph = Paragraph::new(formatted_messages)
-                    .block(Block::default().borders(Borders::ALL).title("Bitcoin P2P Client Log").border_style(match self.focused_widget {
-                        FocusedWidget::Log => Style::default().fg(Color::Magenta),
-                        _ => Style::default().fg(Color::White),
-                    }))
-                    .style(Style::default().fg(Color::White))
-                    .wrap(Wrap { trim: true })
-                    .scroll((self.current_scroll_y.round() as u16, 0));
+                    let paragraph = Paragraph::new(formatted_messages)
+                        .block(Block::default().borders(Borders::ALL).title("Bitcoin P2P Client Log").border_style(match self.focused_widget {
+                            FocusedWidget::Log => Style::default().fg(Color::Magenta),
+                            _ => Style::default().fg(Color::White),
+                        }))
+                        .style(Style::default().fg(Color::White))
+                        .wrap(Wrap { trim: true })
+                        .scroll((self.current_scroll_y.round() as u16, 0));
 
-                f.render_widget(paragraph, log_chunks[0]);
+                    f.render_widget(paragraph, log_chunks[0]);
+                }
             })?;
 
             match rx.recv_timeout(tick_rate) {
@@ -211,6 +221,12 @@ f.render_widget(peer_list_placeholder, instruction_chunks[2]);
                             if self.focused_widget == FocusedWidget::Log && !self.auto_scroll_enabled {
                                 self.auto_scroll_enabled = true;
                                 self.last_user_input_time = Instant::now(); // Reset timer to allow auto-scroll after delay
+                            }
+                        },
+                        KeyCode::Char('l') => {
+                            self.log_visible = !self.log_visible;
+                            if !self.log_visible && self.focused_widget == FocusedWidget::Log {
+                                self.focused_widget = FocusedWidget::BlockHeight;
                             }
                         },
                         KeyCode::Enter => {
