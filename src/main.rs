@@ -43,13 +43,14 @@ fn main() -> Result<()> {
             add_message("Attempting to connect and handshake...".to_string());
             let (tx_conn, rx_conn) = std::sync::mpsc::channel();
             let block_height_clone_for_conn = Arc::clone(&block_height_clone);
+            let running_network_clone_for_conn = Arc::clone(&running_network_clone);
 
             std::thread::spawn(move || {
                 // In a real scenario, you might want to pass `running_conn_clone` to `connect_and_handshake`
                 // so it can gracefully exit if the main thread signals shutdown during a long connection attempt.
                 // For this example, we'll rely on the timeout to interrupt.
-                let conn_result = connect_and_handshake(DNS_SEEDS, DEFAULT_PORT, block_height_clone_for_conn);
-                tx_conn.send(conn_result).unwrap();
+                let conn_result = connect_and_handshake(DNS_SEEDS, DEFAULT_PORT, block_height_clone_for_conn, running_network_clone_for_conn);
+                let _ = tx_conn.send(conn_result);
             });
 
             let stream_result: Result<TcpStream, anyhow::Error> = match rx_conn.recv_timeout(Duration::from_secs(10)) {

@@ -7,14 +7,14 @@ use sha2::{Digest, Sha256};
 use log::{info, error, warn, debug, LevelFilter};
 use simplelog::{CombinedLogger, WriteLogger, Config};
 use std::fs::{self, File};
-use anyhow::Result;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 
 // --- Constants ---
 pub const MAGIC_BYTES: [u8; 4] = [0xF9, 0xBE, 0xB4, 0xD9]; // Mainnet
 pub const DEFAULT_PORT: u16 = 8333;
 pub const PROTOCOL_VERSION: i32 = 70016;
 pub const SERVICES: u64 = 1;
+use anyhow::Result;
 
 pub const DNS_SEEDS: &[&str] = &[
     "seed.bitcoin.sipa.be", "dnsseed.bluematt.me", "dnsseed.bitcoin.dashjr.org",
@@ -78,10 +78,14 @@ pub fn connect_and_handshake(
     dns_seeds: &[&str],
     default_port: u16,
     block_height: Arc<Mutex<i32>>,
+    running: Arc<AtomicBool>,
 ) -> Result<TcpStream> {
     info!("[FLOW] Attempting TCP connection and handshake...");
 
     for seeder_domain in dns_seeds.iter() {
+        if !running.load(Ordering::SeqCst) {
+            return Err(anyhow::anyhow!("Shutdown signal received, aborting connection attempt."));
+        }
         info!("[FLOW] Trying to connect to {}: {}", seeder_domain, default_port);
         let mut stream = match TcpStream::connect(format!("{}:{}", seeder_domain, default_port)) {
             Ok(s) => {
