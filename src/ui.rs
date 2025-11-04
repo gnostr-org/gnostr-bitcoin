@@ -1,6 +1,6 @@
 use std::{io, sync::{mpsc, Arc, Mutex}, time::{Duration, Instant}};
 use crossterm::{
-    event::{self, Event as CEvent, KeyCode, KeyEventKind},
+    event::{self, Event as CEvent, KeyCode},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
