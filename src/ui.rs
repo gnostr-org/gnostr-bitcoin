@@ -39,7 +39,7 @@ impl App {
             scroll_state: 0,
             running,
             block_height,
-            focused_widget: FocusedWidget::BlockHeight,
+            focused_widget: FocusedWidget::Log,
         }
     }
 
