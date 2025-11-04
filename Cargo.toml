@@ -1,6 +1,6 @@
 [package]
 name = "gnostr-bitcoin"
-version = "0.1.0-1910.922219.839510"
+version = "1910.922229.829806"
 edition = "2024"
 
 [lib]
