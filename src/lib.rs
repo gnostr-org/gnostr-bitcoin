@@ -4,6 +4,10 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 use std::time::{SystemTime, UNIX_EPOCH};
 use sha2::{Digest, Sha256};
+use log::{info, error, warn, LevelFilter};
+use simplelog::{CombinedLogger, WriteLogger, Config};
+use std::fs::{self, File};
+use std::path::PathBuf;
 
 // --- Constants ---
 pub const MAGIC_BYTES: [u8; 4] = [0xF9, 0xBE, 0xB4, 0xD9]; // Mainnet
@@ -15,6 +19,25 @@ pub const DNS_SEEDS: &[&str] = &[
     "seed.bitcoin.sipa.be", "dnsseed.bluematt.me", "dnsseed.bitcoin.dashjr.org",
     "seed.btc.petertodd.org", "dnsseed.emzy.de", "seed.bitcoin.wiz.biz",
 ];
+
+pub fn init_logger() -> Result<(), Box<dyn std::error::Error>> {
+    let home_dir = dirs::home_dir().ok_or("Could not find home directory")?;
+    let gnostr_dir = home_dir.join(".gnostr");
+    let bitcoin_dir = gnostr_dir.join("bitcoin");
+    let log_file_path = bitcoin_dir.join("gnostr-bitcoin.log");
+
+    fs::create_dir_all(&bitcoin_dir)?;
+
+    CombinedLogger::init(
+        vec![
+            WriteLogger::new(
+                LevelFilter::Info,
+                Config::default(),
+                File::create(log_file_path)?
+            ),
+        ]
+    ).map_err(|e| e.into())
+}
 
 // ----------------------------------------------------------------------
 // --- Bitcoin Data Parsing Trait (Fixed E0599/E0608) ---
@@ -55,53 +78,53 @@ pub fn connect_and_handshake(
     dns_seeds: &[&str],
     default_port: u16,
 ) -> Result<TcpStream, Box<dyn std::error::Error>> {
-    println!("[FLOW] Attempting TCP connection and handshake...");
+    info!("[FLOW] Attempting TCP connection and handshake...");
 
     for seeder_domain in dns_seeds.iter() {
-        println!("[FLOW] Trying to connect to {}: {}", seeder_domain, default_port);
+        info!("[FLOW] Trying to connect to {}: {}", seeder_domain, default_port);
         let mut stream = match TcpStream::connect(format!("{}:{}", seeder_domain, default_port)) {
             Ok(s) => {
                 s.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
-                println!("[INFO] Connected successfully to {}", seeder_domain);
+                info!("[INFO] Connected successfully to {}", seeder_domain);
                 s
             }
             Err(e) => {
-                println!("[INFO] Failed to connect to {}: {}. Trying next...", seeder_domain, e);
+                info!("[INFO] Failed to connect to {}: {}. Trying next...", seeder_domain, e);
                 continue;
             }
         };
 
         // Attempt handshake
         let handshake_result = (|| -> Result<(), Box<dyn std::error::Error>> {
-            println!("[FLOW] Performing Handshake (sending 'version').");
+            info!("[FLOW] Performing Handshake (sending 'version').");
             let (version_message, _) = build_version_message()?;
-            println!("[SEND] 'version' message (total size: {})", version_message.len());
+            info!("[SEND] 'version' message (total size: {})", version_message.len());
             stream.write_all(&version_message)?;
 
-            println!("[FLOW] Waiting for peer's 'version' response.");
+            info!("[FLOW] Waiting for peer's 'version' response.");
             let (header, payload) = match read_message(&mut stream) {
                 Ok(msg) => msg,
                 Err(e) => {
-                    println!("[ERROR] Failed to read peer\'s version message: {}", e);
+                    error!("[ERROR] Failed to read peer\'s version message: {}", e);
                     return Err(e);
                 }
             };
             let command = std::str::from_utf8(&header[4..16])?.trim_end_matches('\0');
-            println!("[RECEIVED] Command: '{}'", command);
+            info!("[RECEIVED] Command: '{}'", command);
 
             if command == "version" {
                 let mut offset: usize = 80;
-                println!("[TRACE] Parsing 'version' payload (offset {}).", offset);
+                info!("[TRACE] Parsing 'version' payload (offset {}).", offset);
                 let (user_agent_len, bytes_read) = payload.read_varint_and_advance(offset)?;
                 offset += bytes_read + user_agent_len as usize;
-                println!("[TRACE] User Agent length: {} bytes. New offset: {}", user_agent_len, offset);
+                info!("[TRACE] User Agent length: {} bytes. New offset: {}", user_agent_len, offset);
 
                 let block_height_bytes: [u8; 4] = payload[offset..offset + 4].try_into().unwrap();
-                println!("\n⭐ Current Block Height: {}\n", i32::from_le_bytes(block_height_bytes));
+                info!("Current Block Height: {}", i32::from_le_bytes(block_height_bytes));
             }
 
             let verack_message = build_verack_message()?;
-            println!("[SEND] 'verack' message (size: {})", verack_message.len());
+            info!("[SEND] 'verack' message (size: {})", verack_message.len());
             stream.write_all(&verack_message)?;
 
             println!("[FLOW] Waiting for peer's 'verack' or 'addr' response.");

@@ -1,5 +1,5 @@
 use gnostr_bitcoin::ui::{init_tui, restore_tui, App};
-use gnostr_bitcoin::{connect_and_handshake, build_mempool_message, build_ping_message, build_pong_message, read_message, DNS_SEEDS, DEFAULT_PORT};
+use gnostr_bitcoin::{connect_and_handshake, build_mempool_message, build_ping_message, build_pong_message, read_message, DNS_SEEDS, DEFAULT_PORT, init_logger};
 use std::io::Write;
 use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
@@ -7,6 +7,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 
 fn main() -> Result<()> {
+    init_logger()?;
+
     // 1. Setup shared state for messages
     let messages = Arc::new(Mutex::new(Vec::new()));
 
