@@ -32,10 +32,10 @@ pub struct App {
     pub block_height: Arc<Mutex<i32>>,
     pub focused_widget: FocusedWidget,
     last_user_input_time: Instant,
-    auto_scroll_delay: Duration,
     auto_scroll_enabled: bool,
     current_scroll_y: f32, // Animated scroll position
     scroll_animation_speed: f32, // Controls animation speed
+    log_widget_height: u16,
 }
 
 impl App {
@@ -51,6 +51,7 @@ impl App {
             auto_scroll_enabled: true,
             current_scroll_y: 0.0, // Initialize animated scroll position
             scroll_animation_speed: 0.1, // Initialize animation speed
+            log_widget_height: 0,
         }
     }
 
@@ -135,6 +136,7 @@ f.render_widget(peer_list_placeholder, instruction_chunks[2]);
                     let max_height = size.height / 2;
                     std::cmp::min(desired_height, max_height)
                 };
+                self.log_widget_height = log_height;
 
                 let log_chunks = Layout::default()
                     .direction(Direction::Vertical)
@@ -175,7 +177,19 @@ f.render_widget(peer_list_placeholder, instruction_chunks[2]);
                         KeyCode::Down => {
                             if let FocusedWidget::Log = self.focused_widget {
                                 self.scroll_state = self.scroll_state.saturating_add(1);
-                                self.auto_scroll_enabled = false; // User manually scrolled
+                                let messages_count = self.messages.lock().unwrap().len();
+                                let visible_lines = self.log_widget_height.saturating_sub(2);
+                                let max_scroll = if (messages_count as u16) > visible_lines {
+                                    messages_count as u16 - visible_lines
+                                } else {
+                                    0
+                                };
+                                if self.scroll_state >= max_scroll {
+                                    self.scroll_state = max_scroll;
+                                    self.auto_scroll_enabled = true;
+                                } else {
+                                    self.auto_scroll_enabled = false;
+                                }
                             }
                         },
                         KeyCode::Up => {
@@ -204,12 +218,17 @@ f.render_widget(peer_list_placeholder, instruction_chunks[2]);
                             if let FocusedWidget::Log = self.focused_widget {
                                 let messages_count = self.messages.lock().unwrap().len();
                                 if messages_count > 0 {
-                                    // Scroll to the bottom, capped by u16::MAX
-                                    self.scroll_state = std::cmp::min(messages_count as u16, u16::MAX);
+                                    let visible_lines = self.log_widget_height.saturating_sub(2);
+                                    let max_scroll = if (messages_count as u16) > visible_lines {
+                                        messages_count as u16 - visible_lines
+                                    } else {
+                                        0
+                                    };
+                                    self.scroll_state = max_scroll;
                                 } else {
                                     self.scroll_state = 0;
                                 }
-                                self.auto_scroll_enabled = false; // User manually scrolled to bottom
+                                self.auto_scroll_enabled = true;
                             }
                         },
                         _ => {},
@@ -218,8 +237,9 @@ f.render_widget(peer_list_placeholder, instruction_chunks[2]);
                 Ok(Event::Tick) => {
                     // --- Scrolling Animation Logic ---
                     let messages_count = self.messages.lock().unwrap().len();
-                    let bottom_scroll_target = if messages_count > 0 {
-                        std::cmp::min(messages_count as u16, u16::MAX) as f32
+                    let visible_lines = self.log_widget_height.saturating_sub(2);
+                    let bottom_scroll_target = if (messages_count as u16) > visible_lines {
+                        (messages_count as u16 - visible_lines) as f32
                     } else {
                         0.0
                     };
