@@ -34,6 +34,8 @@ pub struct App {
     last_user_input_time: Instant,
     auto_scroll_delay: Duration,
     auto_scroll_enabled: bool,
+    current_scroll_y: f32, // Animated scroll position
+    scroll_animation_speed: f32, // Controls animation speed
 }
 
 impl App {
@@ -47,6 +49,8 @@ impl App {
             last_user_input_time: Instant::now(),
             auto_scroll_delay: Duration::from_secs(5),
             auto_scroll_enabled: true,
+            current_scroll_y: 0.0, // Initialize animated scroll position
+            scroll_animation_speed: 0.1, // Initialize animation speed
         }
     }
 
@@ -135,7 +139,7 @@ impl App {
                     }))
                     .style(Style::default().fg(Color::White))
                     .wrap(Wrap { trim: true })
-                    .scroll((self.scroll_state, 0));
+                    .scroll((self.current_scroll_y.round() as u16, 0));
 
                 f.render_widget(paragraph, chunks[2]);
             })?;
@@ -176,26 +180,63 @@ impl App {
                                 self.focused_widget = FocusedWidget::Log;
                             }
                         },
+                        KeyCode::Esc => {
+                            if self.focused_widget == FocusedWidget::Log && !self.auto_scroll_enabled {
+                                self.auto_scroll_enabled = true;
+                                self.last_user_input_time = Instant::now(); // Reset timer to allow auto-scroll after delay
+                            }
+                        },
+                        KeyCode::Enter => {
+                            if let FocusedWidget::Log = self.focused_widget {
+                                let messages_count = self.messages.lock().unwrap().len();
+                                if messages_count > 0 {
+                                    // Scroll to the bottom, capped by u16::MAX
+                                    self.scroll_state = std::cmp::min(messages_count as u16, u16::MAX);
+                                } else {
+                                    self.scroll_state = 0;
+                                }
+                                self.auto_scroll_enabled = false; // User manually scrolled to bottom
+                            }
+                        },
                         _ => {},
                     }
                 },
                 Ok(Event::Tick) => {
-                    // Check for auto-scroll
-                    if self.focused_widget == FocusedWidget::Log && self.auto_scroll_enabled {
-                        let elapsed = Instant::now().duration_since(self.last_user_input_time);
-                        if elapsed > self.auto_scroll_delay {
-                            let messages_count = self.messages.lock().unwrap().len();
-                            if messages_count > 0 {
-                                // Scroll to the bottom, capped by u16::MAX
-                                let target_scroll_state = std::cmp::min(messages_count as u16, u16::MAX);
-                                if self.scroll_state != target_scroll_state {
-                                    self.scroll_state = target_scroll_state;
+                    // --- Scrolling Animation Logic ---
+                    let messages_count = self.messages.lock().unwrap().len();
+                    let bottom_scroll_target = if messages_count > 0 {
+                        std::cmp::min(messages_count as u16, u16::MAX) as f32
+                    } else {
+                        0.0
+                    };
+
+                    if self.focused_widget == FocusedWidget::Log {
+                        if self.auto_scroll_enabled {
+                            // Auto-scroll towards the bottom
+                            if self.current_scroll_y < bottom_scroll_target {
+                                let diff = bottom_scroll_target - self.current_scroll_y;
+                                self.current_scroll_y += diff * self.scroll_animation_speed;
+                                // Snap to bottom if very close
+                                if (bottom_scroll_target - self.current_scroll_y).abs() < 0.1 {
+                                    self.current_scroll_y = bottom_scroll_target;
                                 }
-                            } else {
-                                self.scroll_state = 0;
+                            } else if self.current_scroll_y > bottom_scroll_target {
+                                // Ensure we don't scroll past the bottom
+                                self.current_scroll_y = bottom_scroll_target;
+                            }
+                        } else {
+                            // Manual scroll animation towards target scroll_state
+                            if self.current_scroll_y != self.scroll_state as f32 {
+                                let diff = self.scroll_state as f32 - self.current_scroll_y;
+                                self.current_scroll_y += diff * self.scroll_animation_speed;
+                                // Snap to target if very close
+                                if (self.scroll_state as f32 - self.current_scroll_y).abs() < 0.1 {
+                                    self.current_scroll_y = self.scroll_state as f32;
+                                }
                             }
                         }
                     }
+                    // --- End Scrolling Logic ---
                 },
                 Err(mpsc::RecvTimeoutError::Timeout) => {},
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
