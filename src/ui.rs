@@ -19,10 +19,11 @@ pub enum Event<I> {
     Tick,
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Copy, Clone)]
 pub enum FocusedWidget {
     BlockHeight,
     Instructions,
+    PeerList,
     Log,
 }
 
@@ -31,6 +32,7 @@ pub struct App {
     pub scroll_state: u16,
     pub running: Arc<AtomicBool>,
     pub block_height: Arc<Mutex<i32>>,
+    pub peer_list: Arc<Mutex<Vec<String>>>,
     pub focused_widget: FocusedWidget,
     last_user_input_time: Instant,
     auto_scroll_enabled: bool,
@@ -41,12 +43,13 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(messages: Arc<Mutex<Vec<(String, SystemTime)>>>, running: Arc<AtomicBool>, block_height: Arc<Mutex<i32>>) -> App {
+    pub fn new(messages: Arc<Mutex<Vec<(String, SystemTime)>>>, running: Arc<AtomicBool>, block_height: Arc<Mutex<i32>>, peer_list: Arc<Mutex<Vec<String>>>) -> App {
         App {
             messages,
             scroll_state: 0,
             running,
             block_height,
+            peer_list,
             focused_widget: FocusedWidget::Log,
             last_user_input_time: Instant::now(),
             auto_scroll_enabled: true,
@@ -128,13 +131,19 @@ impl App {
                     .style(Style::default().fg(Color::Yellow));
                 f.render_widget(instruction_scroll_up, instruction_chunks[1]);
 
-                let peer_list_placeholder = Paragraph::new("Peer List:\n- 127.0.0.1:8333\n- ...")
-    .block(Block::default().borders(Borders::ALL).title("Peers").border_style(match self.focused_widget {
-        FocusedWidget::Instructions => Style::default().fg(Color::Magenta),
-        _ => Style::default().fg(Color::Yellow),
-    }))
-    .style(Style::default().fg(Color::Yellow));
-f.render_widget(peer_list_placeholder, instruction_chunks[2]);
+                // GEMINI - each peer in the list should be selectable which reveals other traits
+                // common to the bitcoin core peer list detail view
+                let peer_list_content: Vec<Line> = self.peer_list.lock().unwrap().iter()
+                    .map(|peer| Line::from(Span::raw(format!("- {}", peer))))
+                    .collect();
+
+                let peer_list_widget = Paragraph::new(peer_list_content)
+                    .block(Block::default().borders(Borders::ALL).title("Peers").border_style(match self.focused_widget {
+                        FocusedWidget::PeerList => Style::default().fg(Color::Magenta),
+                        _ => Style::default().fg(Color::Yellow),
+                    }))
+                    .style(Style::default().fg(Color::Yellow));
+                f.render_widget(peer_list_widget, instruction_chunks[2]);
 
                 if self.log_visible {
                     let messages = self.messages.lock().unwrap();
@@ -184,7 +193,8 @@ f.render_widget(peer_list_placeholder, instruction_chunks[2]);
                         KeyCode::Tab => {
                             self.focused_widget = match self.focused_widget {
                                 FocusedWidget::BlockHeight => FocusedWidget::Instructions,
-                                FocusedWidget::Instructions => FocusedWidget::Log,
+                                FocusedWidget::Instructions => FocusedWidget::PeerList,
+                                FocusedWidget::PeerList => FocusedWidget::Log,
                                 FocusedWidget::Log => FocusedWidget::BlockHeight,
                             };
                         },
@@ -213,14 +223,19 @@ f.render_widget(peer_list_placeholder, instruction_chunks[2]);
                             }
                         },
                         KeyCode::Left => {
-                            if let FocusedWidget::Instructions = self.focused_widget {
-                                self.focused_widget = FocusedWidget::BlockHeight;
-                            }
+                            self.focused_widget = match self.focused_widget {
+                                FocusedWidget::Instructions => FocusedWidget::BlockHeight,
+                                FocusedWidget::PeerList => FocusedWidget::Instructions,
+                                _ => self.focused_widget,
+                            };
                         },
                         KeyCode::Right => {
-                            if let FocusedWidget::Instructions = self.focused_widget {
-                                self.focused_widget = FocusedWidget::Log;
-                            }
+                            self.focused_widget = match self.focused_widget {
+                                FocusedWidget::BlockHeight => FocusedWidget::Instructions,
+                                FocusedWidget::Instructions => FocusedWidget::PeerList,
+                                FocusedWidget::PeerList => FocusedWidget::Log,
+                                _ => self.focused_widget,
+                            };
                         },
                         KeyCode::Esc => {
                             if self.focused_widget == FocusedWidget::Log && !self.auto_scroll_enabled {

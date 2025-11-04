@@ -8,6 +8,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use ctrlc;
 
+pub const MAX_PEERS: usize = 8;
+
 fn main() -> Result<()> {
     init_logger()?;
 
@@ -20,11 +22,13 @@ fn main() -> Result<()> {
     // 1. Setup shared state for messages and block height
     let messages = Arc::new(Mutex::new(Vec::<(String, SystemTime)>::new()));
     let block_height = Arc::new(Mutex::new(0));
+    let peer_list = Arc::new(Mutex::new(Vec::<String>::new()));
 
     // Clone messages for the network thread
     let messages_clone = Arc::clone(&messages);
     let running_network_clone = Arc::clone(&running);
     let block_height_clone = Arc::clone(&block_height);
+    let peer_list_clone = Arc::clone(&peer_list);
 
     // 2. Spawn a thread for network operations
     let _network_thread_handle = std::thread::spawn(move || {
@@ -34,31 +38,36 @@ fn main() -> Result<()> {
 
         add_message("Starting Bitcoin P2P client...".to_string());
 
-        loop { // Outer loop to retry connection
+        loop { // Main loop for managing connections
             if !running_network_clone.load(Ordering::SeqCst) {
                 add_message("Network thread received shutdown signal.".to_string());
                 break;
             }
 
-            add_message("Attempting to connect and handshake...".to_string());
+            let num_connected_peers = peer_list_clone.lock().unwrap().len();
+            if num_connected_peers >= MAX_PEERS {
+                std::thread::sleep(Duration::from_secs(5)); // Wait before checking again
+                continue;
+            }
+
+            add_message(format!("Attempting to connect and handshake ({} / {} peers)...", num_connected_peers, MAX_PEERS));
             let (tx_conn, rx_conn) = std::sync::mpsc::channel();
             let block_height_clone_for_conn = Arc::clone(&block_height_clone);
             let running_network_clone_for_conn = Arc::clone(&running_network_clone);
+            let peer_list_clone_for_conn = Arc::clone(&peer_list_clone);
+            let messages_clone_for_logging = Arc::clone(&messages_clone);
 
             std::thread::spawn(move || {
-                // In a real scenario, you might want to pass `running_conn_clone` to `connect_and_handshake`
-                // so it can gracefully exit if the main thread signals shutdown during a long connection attempt.
-                // For this example, we'll rely on the timeout to interrupt.
                 let conn_result: Result<(TcpStream, String), anyhow::Error> = connect_and_handshake(DNS_SEEDS, DEFAULT_PORT, block_height_clone_for_conn, running_network_clone_for_conn);
+                if let Ok((_, peer_addr)) = &conn_result {
+                    peer_list_clone_for_conn.lock().unwrap().push(peer_addr.clone());
+                    messages_clone_for_logging.lock().unwrap().push((format!("Connected to: {}", peer_addr), SystemTime::now()));
+                }
                 let _ = tx_conn.send(conn_result);
             });
 
-            let mut current_peer_addr: Option<String> = None;
-
             let stream_result: Result<(TcpStream, String), anyhow::Error> = match rx_conn.recv_timeout(Duration::from_secs(10)) {
                 Ok(Ok((stream, peer_addr))) => {
-                    add_message(format!("Successfully connected and handshaked with {}.", peer_addr));
-                    current_peer_addr = Some(peer_addr.clone());
                     Ok((stream, peer_addr))
                 },
                 Ok(Err(e)) => {
@@ -75,145 +84,146 @@ fn main() -> Result<()> {
                 },
             };
 
-            if stream_result.is_err() {
-                std::thread::sleep(Duration::from_secs(2)); // Wait a bit before retrying
-                continue; // Try connecting again
-            }
+            if let Ok((mut stream, connected_peer_addr)) = stream_result {
+                let peer_list_clone_for_peer_thread = Arc::clone(&peer_list_clone);
+                let messages_clone_for_peer_thread = Arc::clone(&messages_clone);
+                let running_network_clone_for_peer_thread = Arc::clone(&running_network_clone);
+                let peer_addr_for_peer_thread = connected_peer_addr.clone();
 
-            let (mut stream, connected_peer_addr) = stream_result.unwrap();
-            current_peer_addr = Some(connected_peer_addr);
+                std::thread::spawn(move || {
+                    let add_message_for_peer = |msg: String| {
+                        messages_clone_for_peer_thread.lock().unwrap().push((format!("[{}] {}", peer_addr_for_peer_thread, msg), SystemTime::now()));
+                    };
 
-            let add_message = |msg: String| {
-                let prefix = current_peer_addr.as_ref().map_or("".to_string(), |addr| format!("[{}] ", addr));
-                messages_clone.lock().unwrap().push((format!("{}{}", prefix, msg), SystemTime::now()));
-            };
+                    add_message_for_peer("Entering message processing loop...".to_string());
 
-            // Request mempool
-            add_message("Requesting mempool information...".to_string());
-            match build_mempool_message() {
-                Ok(mempool_message) => {
-                    if let Err(e) = stream.write_all(&mempool_message) {
-                        add_message(format!("[ERROR] Failed to send mempool request: {}", e));
-                    } else {
-                        add_message("Sent 'mempool' request.".to_string());
-                    }
-                },
-                Err(e) => {
-                    add_message(format!("[ERROR] Failed to build mempool message: {}", e));
-                }
-            }
-
-            // --- Node Life Cycle Loop ---
-            add_message("Entering message processing loop...".to_string());
-            loop {
-                if !running_network_clone.load(Ordering::SeqCst) {
-                    add_message("Network thread received shutdown signal.".to_string());
-                    break; // Exit inner loop
-                }
-                if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(60))) {
-                    add_message(format!("[ERROR] Failed to set read timeout: {}", e));
-                    break; // Exit inner loop
-                }
-
-                match read_message(&mut stream) {
-                    Ok((header, payload)) => {
-                        let command_result = std::str::from_utf8(&header[4..16]);
-                        match command_result {
-                            Ok(command) => {
-                                let command = command.trim_end_matches('\0');
-                                let log_msg = format!("[RECEIVED] Command: '{}', Payload Size: {} bytes", command, payload.len());
-                                add_message(log_msg);
-
-                                match command {
-                                    "version" => {
-                                        add_message("[INFO] Received 'version' message again.".to_string());
-                                    }
-                                    "verack" => {
-                                        add_message("[INFO] Received 'verack' message.".to_string());
-                                    }
-                                    "ping" => {
-                                        add_message("[INFO] Received 'ping' message. Sending 'pong'.".to_string());
-                                        if let Ok(nonce) = payload.try_into().map_err(|_| "Invalid ping nonce size") {
-                                            match build_pong_message(nonce) {
-                                                Ok(pong_message) => {
-                                                    if let Err(e) = stream.write_all(&pong_message) {
-                                                        add_message(format!("[ERROR] Failed to send pong: {}", e));
-                                                    } else {
-                                                        add_message("[SENT] 'pong' message.".to_string());
-                                                    }
-                                                },
-                                                Err(e) => add_message(format!("[ERROR] Failed to build pong message: {}", e)),
-                                            }
-                                        } else {
-                                            add_message("[ERROR] Invalid ping nonce size.".to_string());
-                                        }
-                                    }
-                                    "pong" => {
-                                        add_message("[INFO] Received 'pong' message.".to_string());
-                                    }
-                                    "mempool" => {
-                                        add_message("[INFO] Received 'mempool' response (or another mempool request).".to_string());
-                                    }
-                                    "inv" => {
-                                        add_message("[INFO] Received 'inv' message (inventory).".to_string());
-                                    }
-                                    "tx" => {
-                                        add_message("[INFO] Received 'tx' message (transaction).".to_string());
-                                    }
-                                    "block" => {
-                                        add_message("[INFO] Received 'block' message.".to_string());
-                                    }
-                                    "headers" => {
-                                        add_message("[INFO] Received 'headers' message.".to_string());
-                                    }
-                                    "getheaders" => {
-                                        add_message("[INFO] Received 'getheaders' message.".to_string());
-                                    }
-                                    "getdata" => {
-                                        add_message("[INFO] Received 'getdata' message.".to_string());
-                                    }
-                                    "addr" => {
-                                        add_message("[INFO] Received 'addr' message.".to_string());
-                                    }
-                                    _ => {
-                                        add_message(format!("[INFO] Received unhandled command: '{}'", command));
-                                    }
-                                }
-                            },
-                            Err(e) => {
-                                add_message(format!("[ERROR] Failed to parse command from header: {}", e));
-                                break; // Exit loop on command parsing error
+                    // Request mempool
+                    add_message_for_peer("Requesting mempool information...".to_string());
+                    match build_mempool_message() {
+                        Ok(mempool_message) => {
+                            if let Err(e) = stream.write_all(&mempool_message) {
+                                add_message_for_peer(format!("[ERROR] Failed to send mempool request: {}", e));
+                            } else {
+                                add_message_for_peer("Sent 'mempool' request.".to_string());
                             }
+                        },
+                        Err(e) => {
+                            add_message_for_peer(format!("[ERROR] Failed to build mempool message: {}", e));
                         }
                     }
-                    Err(e) => {
-                        if let Some(io_error) = e.downcast_ref::<std::io::Error>() {
-                            if io_error.kind() == std::io::ErrorKind::TimedOut {
-                                add_message("[INFO] Read timeout. No data received for 60 seconds. Sending ping...".to_string());
-                                let nonce_u64 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
-                                let mut nonce_bytes = [0u8; 8];
-                                nonce_bytes.copy_from_slice(&nonce_u64.to_le_bytes());
-                                match build_ping_message(nonce_bytes) {
-                                    Ok(ping_message) => {
-                                        if let Err(e) = stream.write_all(&ping_message) {
-                                            add_message(format!("[ERROR] Failed to send ping: {}", e));
-                                        } else {
-                                            add_message("[SENT] 'ping' message with nonce.".to_string());
+
+                    loop {
+                        if !running_network_clone_for_peer_thread.load(Ordering::SeqCst) {
+                            add_message_for_peer("Peer thread received shutdown signal.".to_string());
+                            break; // Exit inner loop
+                        }
+                        if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(60))) {
+                            add_message_for_peer(format!("[ERROR] Failed to set read timeout: {}", e));
+                            break; // Exit inner loop
+                        }
+
+                        match read_message(&mut stream) {
+                            Ok((header, payload)) => {
+                                let command_result = std::str::from_utf8(&header[4..16]);
+                                match command_result {
+                                    Ok(command) => {
+                                        let command = command.trim_end_matches('\0');
+                                        let log_msg = format!("[RECEIVED] Command: '{}', Payload Size: {} bytes", command, payload.len());
+                                        add_message_for_peer(log_msg);
+
+                                        match command {
+                                            "version" => {
+                                                add_message_for_peer("[INFO] Received 'version' message again.".to_string());
+                                            }
+                                            "verack" => {
+                                                add_message_for_peer("[INFO] Received 'verack' message.".to_string());
+                                            }
+                                            "ping" => {
+                                                add_message_for_peer("[INFO] Received 'ping' message. Sending 'pong'.".to_string());
+                                                if let Ok(nonce) = payload.try_into().map_err(|_| "Invalid ping nonce size") {
+                                                    match build_pong_message(nonce) {
+                                                        Ok(pong_message) => {
+                                                            if let Err(e) = stream.write_all(&pong_message) {
+                                                                add_message_for_peer(format!("[ERROR] Failed to send pong: {}", e));
+                                                            } else {
+                                                                add_message_for_peer("[SENT] 'pong' message.".to_string());
+                                                            }
+                                                        },
+                                                        Err(e) => add_message_for_peer(format!("[ERROR] Failed to build pong message: {}", e)),
+                                                    }
+                                                } else {
+                                                    add_message_for_peer("[ERROR] Invalid ping nonce size.".to_string());
+                                                }
+                                            }
+                                            "pong" => {
+                                                add_message_for_peer("[INFO] Received 'pong' message.".to_string());
+                                            }
+                                            "mempool" => {
+                                                add_message_for_peer("[INFO] Received 'mempool' response (or another mempool request).".to_string());
+                                            }
+                                            "inv" => {
+                                                add_message_for_peer("[INFO] Received 'inv' message (inventory).".to_string());
+                                            }
+                                            "tx" => {
+                                                add_message_for_peer("[INFO] Received 'tx' message (transaction).".to_string());
+                                            }
+                                            "block" => {
+                                                add_message_for_peer("[INFO] Received 'block' message.".to_string());
+                                            }
+                                            "headers" => {
+                                                add_message_for_peer("[INFO] Received 'headers' message.".to_string());
+                                            }
+                                            "getheaders" => {
+                                                add_message_for_peer("[INFO] Received 'getheaders' message.".to_string());
+                                            }
+                                            "getdata" => {
+                                                add_message_for_peer("[INFO] Received 'getdata' message.".to_string());
+                                            }
+                                            "addr" => {
+                                                add_message_for_peer("[INFO] Received 'addr' message.".to_string());
+                                            }
+                                            _ => {
+                                                add_message_for_peer(format!("[INFO] Received unhandled command: '{}'", command));
+                                            }
                                         }
                                     },
-                                    Err(e) => add_message(format!("[ERROR] Failed to build ping message: {}", e)),
+                                    Err(e) => {
+                                        add_message_for_peer(format!("[ERROR] Failed to parse command from header: {}", e));
+                                        break; // Exit loop on command parsing error
+                                    }
                                 }
-                                continue; // Continue the loop to wait for pong
+                            }
+                            Err(e) => {
+                                if let Some(io_error) = e.downcast_ref::<std::io::Error>() {
+                                    if io_error.kind() == std::io::ErrorKind::TimedOut {
+                                        add_message_for_peer("[INFO] Read timeout. No data received for 60 seconds. Sending ping...".to_string());
+                                        let nonce_u64 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                                        let mut nonce_bytes = [0u8; 8];
+                                        nonce_bytes.copy_from_slice(&nonce_u64.to_le_bytes());
+                                        match build_ping_message(nonce_bytes) {
+                                            Ok(ping_message) => {
+                                                if let Err(e) = stream.write_all(&ping_message) {
+                                                    add_message_for_peer(format!("[ERROR] Failed to send ping: {}", e));
+                                                } else {
+                                                    add_message_for_peer("[SENT] 'ping' message with nonce.".to_string());
+                                                }
+                                            },
+                                            Err(e) => add_message_for_peer(format!("[ERROR] Failed to build ping message: {}", e)),
+                                        }
+                                        continue; // Continue the loop to wait for pong
+                                    }
+                                }
+                                add_message_for_peer(format!("[ERROR] Failed to read message: {}", e));
+                                break; // Exit loop on other read errors
                             }
                         }
-                        add_message(format!("[ERROR] Failed to read message: {}", e));
-                        break; // Exit loop on other read errors
                     }
-                }
+                    add_message_for_peer(format!("Disconnected from {}.", peer_addr_for_peer_thread));
+                    peer_list_clone_for_peer_thread.lock().unwrap().retain(|addr| addr != &peer_addr_for_peer_thread);
+                });
+            } else {
+                std::thread::sleep(Duration::from_secs(2)); // Wait a bit before retrying connection attempt
             }
-            add_message("Exiting node life cycle loop.".to_string());
-            // If the inner loop breaks, it means the current stream is no longer viable.
-            // The outer loop will then attempt to connect to a new peer.
         }
         add_message("Network thread finished. Press 'q' to exit TUI.".to_string());
     });
@@ -222,7 +232,7 @@ fn main() -> Result<()> {
     let mut terminal = init_tui()?;
 
     // 4. Create App instance
-    let mut app = App::new(Arc::clone(&messages), Arc::clone(&running), Arc::clone(&block_height));
+    let mut app = App::new(Arc::clone(&messages), Arc::clone(&running), Arc::clone(&block_height), Arc::clone(&peer_list));
 
     // 5. Run the TUI application loop
     // The `App::run` method will draw messages from `app.messages` and handle user input.
