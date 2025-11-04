@@ -18,11 +18,18 @@ pub enum Event<I> {
     Tick,
 }
 
+pub enum FocusedWidget {
+    BlockHeight,
+    Instructions,
+    Log,
+}
+
 pub struct App {
     pub messages: Arc<Mutex<Vec<String>>>,
     pub scroll_state: u16,
     pub running: Arc<AtomicBool>,
     pub block_height: Arc<Mutex<i32>>,
+    pub focused_widget: FocusedWidget,
 }
 
 impl App {
@@ -32,6 +39,7 @@ impl App {
             scroll_state: 0,
             running,
             block_height,
+            focused_widget: FocusedWidget::BlockHeight,
         }
     }
 
@@ -71,7 +79,10 @@ impl App {
 
                 let block_height_value = *self.block_height.lock().unwrap();
                 let block_height_widget = Paragraph::new(format!("Current Block Height: {}", block_height_value))
-                    .block(Block::default().borders(Borders::ALL).title("Block Height"))
+                    .block(Block::default().borders(Borders::ALL).title("Block Height").border_style(match self.focused_widget {
+                        FocusedWidget::BlockHeight => Style::default().fg(Color::Magenta),
+                        _ => Style::default().fg(Color::White),
+                    }))
                     .style(Style::default().fg(Color::Cyan));
                 f.render_widget(block_height_widget, chunks[0]);
 
@@ -81,17 +92,26 @@ impl App {
                     .split(chunks[1]);
 
                 let instruction_quit = Paragraph::new("Press 'q' to quit.")
-                    .block(Block::default().borders(Borders::ALL).title("Instructions"))
+                    .block(Block::default().borders(Borders::ALL).title("Instructions").border_style(match self.focused_widget {
+                        FocusedWidget::Instructions => Style::default().fg(Color::Magenta),
+                        _ => Style::default().fg(Color::Yellow),
+                    }))
                     .style(Style::default().fg(Color::Yellow));
                 f.render_widget(instruction_quit, instruction_chunks[0]);
 
                 let instruction_scroll_up = Paragraph::new("Press 'Up' to scroll up.")
-                    .block(Block::default().borders(Borders::ALL).title(""))
+                    .block(Block::default().borders(Borders::ALL).title("").border_style(match self.focused_widget {
+                        FocusedWidget::Instructions => Style::default().fg(Color::Magenta),
+                        _ => Style::default().fg(Color::Yellow),
+                    }))
                     .style(Style::default().fg(Color::Yellow));
                 f.render_widget(instruction_scroll_up, instruction_chunks[1]);
 
                 let instruction_scroll_down = Paragraph::new("Press 'Down' to scroll down.")
-                    .block(Block::default().borders(Borders::ALL).title(""))
+                    .block(Block::default().borders(Borders::ALL).title("").border_style(match self.focused_widget {
+                        FocusedWidget::Instructions => Style::default().fg(Color::Magenta),
+                        _ => Style::default().fg(Color::Yellow),
+                    }))
                     .style(Style::default().fg(Color::Yellow));
                 f.render_widget(instruction_scroll_down, instruction_chunks[2]);
 
@@ -102,7 +122,10 @@ impl App {
                     .collect();
 
                 let paragraph = Paragraph::new(formatted_messages)
-                    .block(Block::default().borders(Borders::ALL).title("Bitcoin P2P Client Log"))
+                    .block(Block::default().borders(Borders::ALL).title("Bitcoin P2P Client Log").border_style(match self.focused_widget {
+                        FocusedWidget::Log => Style::default().fg(Color::Magenta),
+                        _ => Style::default().fg(Color::White),
+                    }))
                     .style(Style::default().fg(Color::White))
                     .wrap(Wrap { trim: true })
                     .scroll((self.scroll_state, 0));
@@ -115,8 +138,23 @@ impl App {
                     KeyCode::Char('q') => {
                         self.running.store(false, Ordering::SeqCst);
                     },
-                    KeyCode::Down => self.scroll_state = self.scroll_state.saturating_add(1),
-                    KeyCode::Up => self.scroll_state = self.scroll_state.saturating_sub(1),
+                    KeyCode::Tab => {
+                        self.focused_widget = match self.focused_widget {
+                            FocusedWidget::BlockHeight => FocusedWidget::Instructions,
+                            FocusedWidget::Instructions => FocusedWidget::Log,
+                            FocusedWidget::Log => FocusedWidget::BlockHeight,
+                        };
+                    },
+                    KeyCode::Down => {
+                        if let FocusedWidget::Log = self.focused_widget {
+                            self.scroll_state = self.scroll_state.saturating_add(1);
+                        }
+                    },
+                    KeyCode::Up => {
+                        if let FocusedWidget::Log = self.focused_widget {
+                            self.scroll_state = self.scroll_state.saturating_sub(1);
+                        }
+                    },
                     _ => {},
                 },
                 Ok(Event::Tick) => {},
