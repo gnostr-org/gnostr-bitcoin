@@ -1,4 +1,4 @@
-use std::{io, sync::{mpsc, Arc, Mutex}, time::{Duration, Instant}};
+use std::{io, sync::{mpsc, Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant}};
 use crossterm::{
     event::{self, Event as CEvent, KeyCode},
     execute,
@@ -21,22 +21,28 @@ pub enum Event<I> {
 pub struct App {
     pub messages: Arc<Mutex<Vec<String>>>,
     pub scroll_state: u16,
+    pub running: Arc<AtomicBool>,
 }
 
 impl App {
-    pub fn new(messages: Arc<Mutex<Vec<String>>>) -> App {
+    pub fn new(messages: Arc<Mutex<Vec<String>>>, running: Arc<AtomicBool>) -> App {
         App {
             messages,
             scroll_state: 0,
+            running,
         }
     }
 
     pub fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::Result<()> {
         let (tx, rx) = mpsc::channel();
         let tick_rate = Duration::from_millis(250);
+        let running_clone = self.running.clone();
         std::thread::spawn(move || {
             let mut last_tick = Instant::now();
             loop {
+                if !running_clone.load(Ordering::SeqCst) {
+                    break;
+                }
                 let timeout = tick_rate
                     .checked_sub(last_tick.elapsed())
                     .unwrap_or_else(|| Duration::from_secs(0));
@@ -54,7 +60,7 @@ impl App {
             }
         });
 
-        loop {
+        while self.running.load(Ordering::SeqCst) {
             terminal.draw(|f| {
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
@@ -76,16 +82,23 @@ impl App {
                 f.render_widget(paragraph, chunks[0]);
             })?;
 
-            match rx.recv()? {
-                Event::Input(event) => match event.code {
-                    KeyCode::Char('q') => return Ok(()),
+            match rx.recv_timeout(tick_rate) {
+                Ok(Event::Input(event)) => match event.code {
+                    KeyCode::Char('q') => {
+                        self.running.store(false, Ordering::SeqCst);
+                    },
                     KeyCode::Down => self.scroll_state = self.scroll_state.saturating_add(1),
                     KeyCode::Up => self.scroll_state = self.scroll_state.saturating_sub(1),
                     _ => {},
                 },
-                Event::Tick => {},
+                Ok(Event::Tick) => {},
+                Err(mpsc::RecvTimeoutError::Timeout) => {},
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    self.running.store(false, Ordering::SeqCst);
+                }
             }
         }
+        Ok(())
     }
 }
 

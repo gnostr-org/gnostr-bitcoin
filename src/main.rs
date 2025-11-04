@@ -1,19 +1,26 @@
 use gnostr_bitcoin::ui::{init_tui, restore_tui, App};
 use gnostr_bitcoin::{connect_and_handshake, build_mempool_message, build_ping_message, build_pong_message, read_message, DNS_SEEDS, DEFAULT_PORT, init_logger};
-use std::io::Write;
-use std::net::TcpStream;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use anyhow::Result;
+use ctrlc;
 
 fn main() -> Result<()> {
     init_logger()?;
+
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+    }).expect("Error setting Ctrl-C handler");
 
     // 1. Setup shared state for messages
     let messages = Arc::new(Mutex::new(Vec::new()));
 
     // Clone messages for the network thread
     let messages_clone = Arc::clone(&messages);
+    let running_network_clone = Arc::clone(&running);
 
     // 2. Spawn a thread for network operations
     let _network_thread_handle = std::thread::spawn(move || {
@@ -49,6 +56,10 @@ fn main() -> Result<()> {
                 add_message("Entering message processing loop...".to_string());
                 let mut current_stream = stream_result.as_mut().unwrap();
                 loop {
+                    if !running_network_clone.load(Ordering::SeqCst) {
+                        add_message("Network thread received shutdown signal.".to_string());
+                        break;
+                    }
                     if let Err(e) = current_stream.set_read_timeout(Some(Duration::from_secs(60))) {
                         add_message(format!("[ERROR] Failed to set read timeout: {}", e));
                         break;
@@ -170,7 +181,7 @@ fn main() -> Result<()> {
     let mut terminal = init_tui()?;
 
     // 4. Create App instance
-    let mut app = App::new(Arc::clone(&messages));
+    let mut app = App::new(Arc::clone(&messages), Arc::clone(&running));
 
     // 5. Run the TUI application loop
     // The `App::run` method will draw messages from `app.messages` and handle user input.
