@@ -32,6 +32,9 @@ const BITCOIN_LOGO: [&str; 15] = [
     "⠀⠀⠀⠀⠀⠀⠀⠀⠉⠛⠻⠿⢿⣿⣿⣿⣿⡿⠿⠟⠛⠉⠀⠀⠀⠀⠀⠀⠀⠀",
 ];
 
+const LOGO_HEIGHT: u16 = 15;
+const LOGO_WIDTH: u16 = 80;
+
 pub enum Event<I> {
     Input(I),
     Tick,
@@ -179,11 +182,45 @@ impl App {
 
                     f.render_widget(paragraph, bottom_half_chunks[0]);
                 } else { // Log is hidden, display Bitcoin logo
+                    let logo_area = bottom_half_chunks[0]; // The area where the logo should be displayed
+
+                    // Calculate vertical margins to center the logo
+                    let vertical_margin_total = logo_area.height.saturating_sub(LOGO_HEIGHT);
+                    let top_margin = vertical_margin_total / 2;
+                    let bottom_margin = vertical_margin_total.saturating_sub(top_margin);
+
+                    // Calculate horizontal margins to center the logo
+                    let horizontal_margin_total = logo_area.width.saturating_sub(LOGO_WIDTH);
+                    let left_margin = horizontal_margin_total / 2;
+                    let right_margin = horizontal_margin_total.saturating_sub(left_margin);
+
+                    // Create a vertical layout for centering
+                    let centered_layout_vertical = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([
+                            Constraint::Length(top_margin),
+                            Constraint::Length(LOGO_HEIGHT),
+                            Constraint::Length(bottom_margin),
+                        ])
+                        .split(logo_area);
+
+                    // Create a horizontal layout for centering within the vertical middle chunk
+                    let centered_layout_horizontal = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([
+                            Constraint::Length(left_margin),
+                            Constraint::Length(LOGO_WIDTH),
+                            Constraint::Length(right_margin),
+                        ])
+                        .split(centered_layout_vertical[1]); // Use the middle chunk from vertical split
+
                     let logo_lines: Vec<Line> = BITCOIN_LOGO.iter().map(|line| Line::from(Span::raw(*line))).collect();
                     let logo_widget = Paragraph::new(logo_lines)
                         .block(Block::default().borders(Borders::ALL).title("Bitcoin Logo").border_style(Style::default().fg(Color::Yellow))) // Neutral border style
                         .style(Style::default().fg(Color::Yellow)); // Neutral text style
-                    f.render_widget(logo_widget, bottom_half_chunks[0]);
+
+                    // Render the logo widget in the center chunk
+                    f.render_widget(logo_widget, centered_layout_horizontal[1]);
                 }
 
                 // GEMINI - each peer in the list should be selectable which reveals other traits
