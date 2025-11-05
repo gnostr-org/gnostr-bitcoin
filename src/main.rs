@@ -89,6 +89,61 @@ fn main() -> Result<()> {
         discovered_peers_queue_lock.push(addr.clone());
     }
     log::info!("Added {} loaded peers to discovery queue.", discovered_peers_queue_lock.len());
+    drop(discovered_peers_queue_lock); // Drop the lock before spawning threads
+
+    // --- Start of new code for initial DNS seed discovery ---
+    let (tx_initial_peers, rx_initial_peers) = std::sync::mpsc::channel();
+    let mut handles = Vec::new();
+
+    for &seed_addr_str in DNS_SEEDS.iter() {
+        let seed_addr = seed_addr_str.to_string();
+        let tx_clone = tx_initial_peers.clone();
+        let block_height_clone = Arc::clone(&block_height);
+        let running_clone = Arc::clone(&running);
+        let messages_clone = Arc::clone(&messages);
+        let peer_list_clone = Arc::clone(&peer_list);
+
+        let handle = std::thread::spawn(move || {
+            let add_message = |msg: String| {
+                messages_clone.lock().unwrap().push((msg, SystemTime::now()));
+            };
+            add_message(format!("Attempting initial connection to DNS seed: {}", seed_addr));
+            let conn_result = connect_and_handshake(
+                DNS_SEEDS,
+                DEFAULT_PORT,
+                block_height_clone,
+                running_clone,
+                Some(seed_addr.clone()),
+            );
+            if let Ok((_, _, new_peers)) = conn_result {
+                add_message(format!("Discovered {} new peers from {}.", new_peers.len(), seed_addr));
+                let _ = tx_clone.send(new_peers);
+            } else if let Err(e) = conn_result {
+                add_message(format!("[ERROR] Initial connection to {} failed: {}", seed_addr, e));
+            }
+        });
+        handles.push(handle);
+    }
+
+    // Drop the original sender to signal that no more senders will exist
+    drop(tx_initial_peers);
+
+    // Collect results from initial peer discovery threads
+    let mut initial_discovered_peers: Vec<String> = Vec::new();
+    for new_peers_from_seed in rx_initial_peers.iter() {
+        initial_discovered_peers.extend(new_peers_from_seed);
+    }
+    log::info!("Collected {} initial peers from DNS seeds.", initial_discovered_peers.len());
+
+    // Add newly discovered peers to the main discovered_peers_queue
+    let mut discovered_peers_queue_lock = discovered_peers_queue.lock().unwrap();
+    for peer in initial_discovered_peers {
+        if !discovered_peers_queue_lock.contains(&peer) {
+            discovered_peers_queue_lock.push(peer);
+        }
+    }
+    log::info!("Total peers in discovery queue after initial DNS scan: {}.", discovered_peers_queue_lock.len());
+    // --- End of new code for initial DNS seed discovery ---
 
     // Clones for Ctrl-C handler
     let r_ctrlc = running.clone();
