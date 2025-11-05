@@ -276,17 +276,31 @@ impl App {
 
                     // Render Peers in bottom_half_chunks[1] (conditionally)
                     if self.peer_list_width_percentage > 0 {
-                        let peer_list_content: Vec<Line> = self.peer_list.lock().unwrap().iter()
-                            .map(|(peer_addr, bytes_transferred)| Line::from(Span::raw(format!("{} In: {} B, Out: {} B", peer_addr, bytes_transferred.0, bytes_transferred.1))))
-                            .collect();
+                        let peer_list_lock = self.peer_list.lock().unwrap(); // Lock the mutex once
+                        if peer_list_lock.is_empty() {
+                            // If the list is empty, show a "Connecting..." message
+                            let connecting_message = vec![Line::from("Connecting to peers...")];
+                            let connecting_widget = Paragraph::new(connecting_message)
+                                .block(Block::default().borders(Borders::ALL).title("Peers").border_style(match self.focused_widget {
+                                    FocusedWidget::PeerList => Style::default().fg(Color::Magenta),
+                                    _ => Style::default().fg(Color::Yellow),
+                                }))
+                                .style(Style::default().fg(Color::Yellow));
+                            f.render_widget(connecting_widget, bottom_half_chunks[1]); // Assuming bottom_half_chunks[1] is correct for the peer list pane
+                        } else {
+                            // If the list is not empty, render the actual peer list
+                            let peer_list_content: Vec<Line> = peer_list_lock.iter()
+                                .map(|(peer_addr, bytes_transferred)| Line::from(Span::raw(format!("{} In: {} B, Out: {} B", peer_addr, bytes_transferred.0, bytes_transferred.1))))
+                                .collect();
 
-                        let peer_list_widget = Paragraph::new(peer_list_content)
-                            .block(Block::default().borders(Borders::ALL).title("Peers").border_style(match self.focused_widget {
-                                FocusedWidget::PeerList => Style::default().fg(Color::Magenta),
-                                _ => Style::default().fg(Color::Yellow),
-                            }))
-                            .style(Style::default().fg(Color::Yellow));
-                        f.render_widget(peer_list_widget, bottom_half_chunks[1]);
+                            let peer_list_widget = Paragraph::new(peer_list_content)
+                                .block(Block::default().borders(Borders::ALL).title("Peers").border_style(match self.focused_widget {
+                                    FocusedWidget::PeerList => Style::default().fg(Color::Magenta),
+                                    _ => Style::default().fg(Color::Yellow),
+                                }))
+                                .style(Style::default().fg(Color::Yellow));
+                            f.render_widget(peer_list_widget, bottom_half_chunks[1]); // Assuming bottom_half_chunks[1] is correct for the peer list pane
+                        }
                     } else {
                     // GEMINI we want to stretch the log widget
                     // to fill horizontally when self.peer_list_width_percentage = 0
