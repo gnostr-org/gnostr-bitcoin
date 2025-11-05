@@ -1,6 +1,6 @@
 /// Initializes the logger for the application.
 /// Sets up logging to file and console output.
-use crate::ui::{init_tui, restore_tui, App};
+use gnostr_bitcoin::ui::{init_tui, restore_tui, App};
 use gnostr_bitcoin::{connect_and_handshake, build_mempool_message, build_ping_message, build_pong_message, read_message, DNS_SEEDS, DEFAULT_PORT, init_logger};
 use std::io::Write;
 use std::net::TcpStream;
@@ -12,8 +12,6 @@ use ctrlc;
 use std::path::PathBuf;
 use std::fs;
 use serde::{Serialize, Deserialize};
-
-mod ui;
 
 /// Maximum number of concurrent peer connections allowed.
 pub const MAX_PEERS: usize = 8;
