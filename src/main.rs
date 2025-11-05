@@ -24,7 +24,7 @@ fn main() -> Result<()> {
     // 1. Setup shared state for messages and block height
     let messages = Arc::new(Mutex::new(Vec::<(String, SystemTime)>::new()));
     let block_height = Arc::new(Mutex::new(0));
-    let peer_list = Arc::new(Mutex::new(Vec::<(String, u64, u64)>::new()));
+    let peer_list = Arc::new(Mutex::new(std::collections::HashMap::<String, (u64, u64)>::new()));
     let discovered_peers_queue = Arc::new(Mutex::new(Vec::<String>::new()));
 
     // Clone messages for the network thread
@@ -77,7 +77,7 @@ fn main() -> Result<()> {
                     target_peer_addr,
                 );
                 if let Ok((_, peer_addr, new_peers)) = &conn_result {
-                    peer_list_clone_for_conn.lock().unwrap().push((peer_addr.clone(), 0, 0));
+                    peer_list_clone_for_conn.lock().unwrap().insert(peer_addr.clone(), (0, 0));
                     messages_clone_for_logging.lock().unwrap().push((format!("Connected to: {}", peer_addr), SystemTime::now()));
                     discovered_peers_queue_for_conn.lock().unwrap().extend(new_peers.clone());
                 }
@@ -142,15 +142,16 @@ fn main() -> Result<()> {
                         }
 
                         // Periodically update traffic in the shared peer_list
-                        if last_traffic_update.elapsed() >= Duration::from_secs(1) {
-                            let mut peer_list_lock = peer_list_clone_for_peer_thread.lock().unwrap();
-                            if let Some(peer) = peer_list_lock.iter_mut().find(|(addr, _, _)| addr == &peer_addr_for_peer_thread) {
-                                peer.1 = inbound_traffic;
-                                peer.2 = outbound_traffic;
-                            }
-                            last_traffic_update = Instant::now();
-                        }
-
+                                        if last_traffic_update.elapsed() >= Duration::from_secs(1) {
+                                            let mut peer_list_lock = peer_list_clone_for_peer_thread.lock().unwrap();
+                                            if let Some(peer_entry) = peer_list_lock.iter_mut().find(|(addr, _traffic_tuple)| {
+                                                *addr == &peer_addr_for_peer_thread
+                                            }) {
+                                                peer_entry.1.0 = inbound_traffic; // Accessing the first u64 in the tuple
+                                                peer_entry.1.1 = outbound_traffic; // Accessing the second u64 in the tuple
+                                            }
+                                            last_traffic_update = Instant::now();
+                                        }
                         if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(60))) {
                             add_message_for_peer(format!("[ERROR] Failed to set read timeout: {}", e));
                             break; // Exit inner loop
@@ -254,15 +255,12 @@ fn main() -> Result<()> {
                         }
                     }
                     add_message_for_peer(format!("Disconnected from {}. Total In: {} B, Total Out: {} B", peer_addr_for_peer_thread, inbound_traffic, outbound_traffic));
-                    peer_list_clone_for_peer_thread.lock().unwrap().retain_mut(|(addr, current_in, current_out)| {
-                        if addr == &peer_addr_for_peer_thread {
-                            *current_in = inbound_traffic;
-                            *current_out = outbound_traffic;
-                            false // Remove the peer
-                        } else {
-                            true
-                        }
-                    });
+                    // Update traffic before removing the peer
+                    if let Some(peer_entry) = peer_list_clone_for_peer_thread.lock().unwrap().get_mut(&peer_addr_for_peer_thread) {
+                        peer_entry.0 = inbound_traffic;
+                        peer_entry.1 = outbound_traffic;
+                    }
+                    peer_list_clone_for_peer_thread.lock().unwrap().remove(&peer_addr_for_peer_thread);
                 });
             } else {
                 std::thread::sleep(Duration::from_secs(2)); // Wait a bit before retrying connection attempt
