@@ -619,7 +619,7 @@ pub fn build_getheaders_message(
     let mut raw_message = Vec::new();
     raw_message.write_all(&MAGIC_BYTES)?;
     let mut command_bytes = [0u8; 12];
-    command_bytes[0..9].copy_from_slice(b"getheaders");
+    command_bytes[0..10].copy_from_slice(b"getheaders");
     raw_message.write_all(&command_bytes)?;
     raw_message.write_all(&(payload_len as u32).to_le_bytes())?;
     raw_message.write_all(&checksum)?;
@@ -783,6 +783,122 @@ mod tests {
     }
 
     #[test]
+    fn test_varint_decoding_single_byte() -> Result<()> {
+        // Test decoding a single-byte varint (value <= 0xfc)
+        let payload = [0x7b]; // Value 123
+        assert_eq!(payload.read_varint_and_advance(0)?, (123, 1));
+        Ok(())
+    }
+
+    #[test]
+    fn test_varint_decoding_max_single_byte() -> Result<()> {
+        // Test decoding the maximum single-byte varint (0xfc)
+        let payload = [0xfc]; // Value 252
+        assert_eq!(payload.read_varint_and_advance(0)?, (252, 1));
+        Ok(())
+    }
+
+    #[test]
+    fn test_varint_decoding_max_2_byte() -> Result<()> {
+        // Test decoding the maximum 2-byte varint (0xffff)
+        let payload = [0xfd, 0xff, 0xff]; // Value 65535
+        assert_eq!(payload.read_varint_and_advance(0)?, (65535, 3));
+        Ok(())
+    }
+
+    #[test]
+    fn test_varint_decoding_max_4_byte() -> Result<()> {
+        // Test decoding the maximum 4-byte varint (0xffffffff)
+        let payload = [0xfe, 0xff, 0xff, 0xff, 0xff]; // Value 4294967295
+        assert_eq!(payload.read_varint_and_advance(0)?, (4294967295, 5));
+        Ok(())
+    }
+
+    #[test]
+    fn test_varint_decoding_max_8_byte() -> Result<()> {
+        // Test decoding the maximum 8-byte varint (0xffffffffffffffff)
+        let payload = [0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]; // Value 18446744073709551615
+        assert_eq!(
+            payload.read_varint_and_advance(0)?,
+            (18446744073709551615, 9)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_varint_decoding_incomplete_2_byte() -> Result<()> {
+        // Test error for incomplete 2-byte varint
+        let payload = [0xfd, 0x00];
+        let err = payload.read_varint_and_advance(0).unwrap_err();
+        assert_eq!(err.to_string(), "Incomplete 2-byte varint.");
+        Ok(())
+    }
+
+    #[test]
+    fn test_varint_decoding_incomplete_4_byte() -> Result<()> {
+        // Test error for incomplete 4-byte varint
+        let payload = [0xfe, 0x00, 0x00, 0x01];
+        let err = payload.read_varint_and_advance(0).unwrap_err();
+        assert_eq!(err.to_string(), "Incomplete 4-byte varint.");
+        Ok(())
+    }
+
+    #[test]
+    fn test_varint_decoding_incomplete_8_byte() -> Result<()> {
+        // Test error for incomplete 8-byte varint
+        let payload = [0xff, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01];
+        let err = payload.read_varint_and_advance(0).unwrap_err();
+        assert_eq!(err.to_string(), "Incomplete 8-byte varint.");
+        Ok(())
+    }
+
+    #[test]
+    fn test_varint_decoding_offset_out_of_bounds() -> Result<()> {
+        // Test error for offset out of bounds
+        let payload = [0x01];
+        let err = payload.read_varint_and_advance(1).unwrap_err();
+        assert_eq!(err.to_string(), "VarInt read failed: Offset out of bounds.");
+        Ok(())
+    }
+
+    #[test]
+    fn test_encode_varint_single_byte() {
+        // Test encoding a single-byte varint
+        assert_eq!(encode_varint(123), vec![0x7b]);
+        assert_eq!(encode_varint(0xfc), vec![0xfc]);
+    }
+
+    #[test]
+    fn test_encode_varint_2_bytes() {
+        // Test encoding a 2-byte varint
+        assert_eq!(encode_varint(253), vec![0xfd, 0xfd, 0x00]);
+        assert_eq!(encode_varint(0xffff), vec![0xfd, 0xff, 0xff]);
+    }
+
+    #[test]
+    fn test_encode_varint_4_bytes() {
+        // Test encoding a 4-byte varint
+        assert_eq!(encode_varint(0x10000), vec![0xfe, 0x00, 0x00, 0x01, 0x00]);
+        assert_eq!(
+            encode_varint(0xffffffff),
+            vec![0xfe, 0xff, 0xff, 0xff, 0xff]
+        );
+    }
+
+    #[test]
+    fn test_encode_varint_8_bytes() {
+        // Test encoding an 8-byte varint
+        assert_eq!(
+            encode_varint(0x100000000),
+            vec![0xff, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00]
+        );
+        assert_eq!(
+            encode_varint(0xffffffffffffffff),
+            vec![0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]
+        );
+    }
+
+    #[test]
     fn test_mempool_message_encoding() -> Result<()> {
         // Verifies that the `mempool` message is correctly encoded with a zero payload.
         let mempool_msg = build_mempool_message()?;
@@ -797,4 +913,148 @@ mod tests {
         assert_eq!(mempool_msg.len(), 24);
         Ok(())
     }
+
+    #[test]
+    fn test_build_version_message() -> Result<()> {
+        let (version_msg, payload_len) = build_version_message()?;
+
+        assert_eq!(&version_msg[0..4], MAGIC_BYTES);
+        assert_eq!(str::from_utf8(&version_msg[4..11])?, "version");
+        assert_eq!(
+            u32::from_le_bytes(version_msg[16..20].try_into().unwrap()),
+            payload_len as u32
+        );
+        assert_eq!(version_msg.len(), 24 + payload_len);
+
+        // Basic check for some payload content (e.g., protocol version)
+        assert_eq!(
+            u32::from_le_bytes(version_msg[24..28].try_into().unwrap()),
+            PROTOCOL_VERSION as u32
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_verack_message() -> Result<()> {
+        let verack_msg = build_verack_message()?;
+
+        assert_eq!(&verack_msg[0..4], MAGIC_BYTES);
+        assert_eq!(str::from_utf8(&verack_msg[4..10])?, "verack");
+        assert_eq!(
+            u32::from_le_bytes(verack_msg[16..20].try_into().unwrap()),
+            0
+        );
+        assert_eq!(verack_msg.len(), 24);
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_ping_message() -> Result<()> {
+        let nonce = [1, 2, 3, 4, 5, 6, 7, 8];
+        let ping_msg = build_ping_message(nonce)?;
+
+        assert_eq!(&ping_msg[0..4], MAGIC_BYTES);
+        assert_eq!(str::from_utf8(&ping_msg[4..8])?, "ping");
+        assert_eq!(
+            u32::from_le_bytes(ping_msg[16..20].try_into().unwrap()),
+            8
+        );
+        assert_eq!(ping_msg.len(), 24 + 8);
+        assert_eq!(&ping_msg[24..32], nonce);
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_pong_message() -> Result<()> {
+        let nonce = [8, 7, 6, 5, 4, 3, 2, 1];
+        let pong_msg = build_pong_message(nonce)?;
+
+        assert_eq!(&pong_msg[0..4], MAGIC_BYTES);
+        assert_eq!(str::from_utf8(&pong_msg[4..8])?, "pong");
+        assert_eq!(
+            u32::from_le_bytes(pong_msg[16..20].try_into().unwrap()),
+            8
+        );
+        assert_eq!(pong_msg.len(), 24 + 8);
+        assert_eq!(&pong_msg[24..32], nonce);
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_getaddr_message() -> Result<()> {
+        let getaddr_msg = build_getaddr_message()?;
+
+        assert_eq!(&getaddr_msg[0..4], MAGIC_BYTES);
+        assert_eq!(str::from_utf8(&getaddr_msg[4..11])?, "getaddr");
+        assert_eq!(
+            u32::from_le_bytes(getaddr_msg[16..20].try_into().unwrap()),
+            0
+        );
+        assert_eq!(getaddr_msg.len(), 24);
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_getheaders_message() -> Result<()> {
+        let locator_hashes = vec![[0u8; 32], [1u8; 32]];
+        let stop_hash = [2u8; 32];
+        let getheaders_msg = build_getheaders_message(locator_hashes.clone(), stop_hash)?;
+
+        assert_eq!(&getheaders_msg[0..4], MAGIC_BYTES);
+        assert_eq!(str::from_utf8(&getheaders_msg[4..14])?, "getheaders");
+
+        // Calculate expected payload length:
+        // PROTOCOL_VERSION (4 bytes)
+        // hash_count (varint, 1 byte for 2 hashes)
+        // locator_hashes (2 * 32 bytes)
+        // stop_hash (32 bytes)
+        let expected_payload_len = 4 + 1 + (2 * 32) + 32;
+        assert_eq!(
+            u32::from_le_bytes(getheaders_msg[16..20].try_into().unwrap()),
+            expected_payload_len as u32
+        );
+        assert_eq!(getheaders_msg.len(), 24 + expected_payload_len);
+
+        // Verify parts of the payload
+        let mut offset = 24; // Start of payload
+        assert_eq!(
+            u32::from_le_bytes(getheaders_msg[offset..offset + 4].try_into().unwrap()),
+            PROTOCOL_VERSION as u32
+        );
+        offset += 4;
+
+        assert_eq!(getheaders_msg[offset], 2); // hash_count varint
+        offset += 1;
+
+        assert_eq!(&getheaders_msg[offset..offset + 32], &locator_hashes[0]);
+        offset += 32;
+        assert_eq!(&getheaders_msg[offset..offset + 32], &locator_hashes[1]);
+        offset += 32;
+
+        assert_eq!(&getheaders_msg[offset..offset + 32], &stop_hash);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_calculate_checksum() {
+        // Test with an empty payload
+        let empty_payload = vec![];
+        let expected_checksum_empty = [0x5d, 0xf6, 0xe0, 0xe2]; // Double SHA256 of empty string
+        assert_eq!(calculate_checksum(&empty_payload), expected_checksum_empty);
+
+        // Test with a known payload (e.g., "hello world")
+        let hello_world_payload = b"hello world".to_vec();
+        let expected_checksum_hello_world = [0xbc, 0x62, 0xd4, 0xb8]; // Corrected pre-calculated double SHA256 of "hello world"
+        assert_eq!(
+            calculate_checksum(&hello_world_payload),
+            expected_checksum_hello_world
+        );
+
+        // Test with a longer payload
+        let long_payload = vec![0; 100];
+        let expected_checksum_long = [0x71, 0x81, 0x6d, 0xf1]; // Corrected pre-calculated double SHA256 of 100 null bytes
+        assert_eq!(calculate_checksum(&long_payload), expected_checksum_long);
+    }
+
 }
