@@ -404,6 +404,59 @@ pub fn build_getaddr_message() -> Result<Vec<u8>> {
     Ok(raw_message)
 }
 
+// Helper function for VarInt encoding
+fn encode_varint(value: u64) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    if value <= 0xfc {
+        bytes.push(value as u8);
+    } else if value <= 0xffff {
+        bytes.push(0xfd);
+        bytes.extend_from_slice(&(value as u16).to_le_bytes());
+    } else if value <= 0xffffffff {
+        bytes.push(0xfe);
+        bytes.extend_from_slice(&(value as u32).to_le_bytes());
+    } else {
+        bytes.push(0xff);
+        bytes.extend_from_slice(&(value as u64).to_le_bytes());
+    }
+    bytes
+}
+
+pub fn build_getheaders_message(locator_hashes: Vec<[u8; 32]>, stop_hash: [u8; 32]) -> Result<Vec<u8>> {
+    info!("[FUNC] build_getheaders_message: Assembling message.");
+    let mut payload = Vec::new();
+
+    // Protocol version
+    payload.write_all(&PROTOCOL_VERSION.to_le_bytes())?;
+
+    // Hash count and Block locator hashes
+    let hash_count = locator_hashes.len() as u64;
+    payload.write_all(&encode_varint(hash_count))?; // Use helper
+    for hash in locator_hashes {
+        payload.write_all(&hash)?;
+    }
+
+    // Hash stop
+    payload.write_all(&stop_hash)?;
+
+    let payload_len = payload.len();
+    let checksum = calculate_checksum(&payload);
+
+    // Construct the full message
+    let mut raw_message = Vec::new();
+    raw_message.write_all(&MAGIC_BYTES)?;
+    let mut command_bytes = [0u8; 12];
+    command_bytes[0..9].copy_from_slice(b"getheaders");
+    raw_message.write_all(&command_bytes)?;
+    raw_message.write_all(&(payload_len as u32).to_le_bytes())?;
+    raw_message.write_all(&checksum)?;
+    raw_message.write_all(&payload)?;
+
+    info!("[FUNC] build_getheaders_message: Done. Payload size: {}", payload_len);
+    Ok(raw_message)
+}
+
+
 fn calculate_checksum(payload: &[u8]) -> [u8; 4] {
     debug!("[FUNC] calculate_checksum: Hashing {} bytes.", payload.len());
     let hash1 = Sha256::digest(payload);
