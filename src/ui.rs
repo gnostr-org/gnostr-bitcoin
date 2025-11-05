@@ -53,6 +53,7 @@ pub struct App {
     pub scroll_state: u16,
     pub running: Arc<AtomicBool>,
     pub block_height: Arc<Mutex<i32>>,
+    pub block_hash: Arc<Mutex<String>>,
     pub peer_list: Arc<Mutex<Vec<(String, u64, u64)>>>,
     pub focused_widget: FocusedWidget,
     last_user_input_time: Instant,
@@ -70,6 +71,7 @@ impl App {
             scroll_state: 0,
             running,
             block_height,
+            block_hash: Arc::new(Mutex::new(String::new())),
             peer_list,
             focused_widget: FocusedWidget::Log,
             last_user_input_time: Instant::now(),
@@ -117,8 +119,9 @@ impl App {
                     .split(size);
 
                 let block_height_value = *self.block_height.lock().unwrap();
-                let block_height_widget = Paragraph::new(format!("120:Block: {}", block_height_value))
-                    .block(Block::default().borders(Borders::ALL).title(format!("121:Block: {}", block_height_value)).border_style(match self.focused_widget {
+                let block_hash_value = self.block_hash.lock().unwrap();
+                let block_height_widget = Paragraph::new("")
+                    .block(Block::default().borders(Borders::ALL).title(format!("Block Height: {} Hash: {}", block_height_value, block_hash_value)).border_style(match self.focused_widget {
                         FocusedWidget::BlockHeight => Style::default().fg(Color::Magenta),
                         _ => Style::default().fg(Color::White),
                     }))
