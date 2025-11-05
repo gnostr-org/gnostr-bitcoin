@@ -77,18 +77,19 @@ fn main() -> Result<()> {
     let running = Arc::new(AtomicBool::new(true));
     let messages = Arc::new(Mutex::new(Vec::<(String, SystemTime)>::new()));
     let block_height = Arc::new(Mutex::new(0));
-    let peer_list = Arc::new(Mutex::new(load_peers().unwrap_or_else(|e| {
-        log::error!("Failed to load peers on startup: {}", e);
+    let known_peers = Arc::new(Mutex::new(load_peers().unwrap_or_else(|e| {
+        log::error!("Failed to load known peers on startup: {}", e);
         std::collections::HashMap::new()
     })));
+    let active_peers = Arc::new(Mutex::new(std::collections::HashMap::<String, (u64, u64)>::new()));
     let discovered_peers_queue = Arc::new(Mutex::new(Vec::<String>::new()));
 
-    // Populate discovered_peers_queue with loaded peers
+    // Populate discovered_peers_queue with known peers
     let mut discovered_peers_queue_lock = discovered_peers_queue.lock().unwrap();
-    for (addr, _) in peer_list.lock().unwrap().iter() {
+    for (addr, _) in known_peers.lock().unwrap().iter() {
         discovered_peers_queue_lock.push(addr.clone());
     }
-    log::info!("Added {} loaded peers to discovery queue.", discovered_peers_queue_lock.len());
+    log::info!("Added {} known peers to discovery queue.", discovered_peers_queue_lock.len());
     drop(discovered_peers_queue_lock); // Drop the lock before spawning threads
 
     // --- Start of new code for initial DNS seed discovery ---
@@ -101,7 +102,7 @@ fn main() -> Result<()> {
         let block_height_clone = Arc::clone(&block_height);
         let running_clone = Arc::clone(&running);
         let messages_clone = Arc::clone(&messages);
-        let peer_list_clone = Arc::clone(&peer_list);
+        let _known_peers_clone = Arc::clone(&known_peers);
 
         let handle = std::thread::spawn(move || {
             let add_message = |msg: String| {
@@ -135,24 +136,30 @@ fn main() -> Result<()> {
     }
     log::info!("Collected {} initial peers from DNS seeds.", initial_discovered_peers.len());
 
-    // Add newly discovered peers to the main discovered_peers_queue
+    // Add newly discovered peers to the main discovered_peers_queue and known_peers
     let mut discovered_peers_queue_lock = discovered_peers_queue.lock().unwrap();
+    let mut known_peers_lock = known_peers.lock().unwrap();
     for peer in initial_discovered_peers {
         if !discovered_peers_queue_lock.contains(&peer) {
-            discovered_peers_queue_lock.push(peer);
+            discovered_peers_queue_lock.push(peer.clone());
+        }
+        if !known_peers_lock.contains_key(&peer) {
+            known_peers_lock.insert(peer, (0, 0)); // Initialize with 0 total traffic
         }
     }
     log::info!("Total peers in discovery queue after initial DNS scan: {}.", discovered_peers_queue_lock.len());
+    drop(discovered_peers_queue_lock); // Drop the lock before spawning threads
+    drop(known_peers_lock); // Drop the lock before spawning threads
     // --- End of new code for initial DNS seed discovery ---
 
     // Clones for Ctrl-C handler
     let r_ctrlc = running.clone();
-    let peer_list_for_shutdown_ctrlc = Arc::clone(&peer_list);
+    let known_peers_for_shutdown_ctrlc = Arc::clone(&known_peers);
 
     ctrlc::set_handler(move || {
         log::info!("Ctrl-C received. Initiating shutdown...");
         r_ctrlc.store(false, Ordering::SeqCst);
-        if let Err(e) = save_peers(&peer_list_for_shutdown_ctrlc.lock().unwrap()) {
+        if let Err(e) = save_peers(&known_peers_for_shutdown_ctrlc.lock().unwrap()) {
             log::error!("Failed to save peers on shutdown: {}", e);
         }
     }).expect("Error setting Ctrl-C handler");
@@ -161,9 +168,9 @@ fn main() -> Result<()> {
     let messages_network = Arc::clone(&messages);
     let running_network = Arc::clone(&running);
     let block_height_network = Arc::clone(&block_height);
-    let peer_list_network = Arc::clone(&peer_list);
+    let active_peers_network = Arc::clone(&active_peers);
+    let known_peers_network = Arc::clone(&known_peers);
     let discovered_peers_queue_network = Arc::clone(&discovered_peers_queue);
-    let peer_list_for_shutdown_network_thread = Arc::clone(&peer_list); // This is for the network thread's internal shutdown logic
 
     // 2. Spawn a thread for network operations
     let _network_thread_handle = std::thread::spawn(move || {
@@ -176,13 +183,19 @@ fn main() -> Result<()> {
         loop { // Main loop for managing connections
             if !running_network.load(Ordering::SeqCst) {
                 add_message("Network thread received shutdown signal.".to_string());
-                // Before breaking, ensure the peer_list_for_shutdown is updated with the latest peer_list
-                let current_peer_list = peer_list_network.lock().unwrap();
-                *peer_list_for_shutdown_network_thread.lock().unwrap() = current_peer_list.clone();
+                // On shutdown, ensure known_peers is updated with the latest active_peers traffic
+                let mut known_peers_lock = known_peers_network.lock().unwrap();
+                let active_peers_lock = active_peers_network.lock().unwrap();
+                for (addr, (in_traffic, out_traffic)) in active_peers_lock.iter() {
+                    known_peers_lock.entry(addr.clone()).and_modify(|(total_in, total_out)| {
+                        *total_in += in_traffic;
+                        *total_out += out_traffic;
+                    }).or_insert(( *in_traffic, *out_traffic));
+                }
                 break;
             }
 
-            let num_connected_peers = peer_list_network.lock().unwrap().len();
+            let num_connected_peers = active_peers_network.lock().unwrap().len();
             if num_connected_peers >= MAX_PEERS {
                 std::thread::sleep(Duration::from_secs(5)); // Wait before checking again
                 continue;
@@ -198,9 +211,11 @@ fn main() -> Result<()> {
             let (tx_conn, rx_conn) = std::sync::mpsc::channel();
             let block_height_clone_for_conn = Arc::clone(&block_height_network);
             let running_network_clone_for_conn = Arc::clone(&running_network);
-            let peer_list_clone_for_conn = Arc::clone(&peer_list_network);
+            let active_peers_clone_for_conn = Arc::clone(&active_peers_network);
+            let known_peers_clone_for_conn = Arc::clone(&known_peers_network);
             let messages_clone_for_logging = Arc::clone(&messages_network);
             let discovered_peers_queue_for_conn = Arc::clone(&discovered_peers_queue_network);
+            let target_peer_addr_for_thread = target_peer_addr.clone();
 
             std::thread::spawn(move || {
                 let conn_result: Result<(TcpStream, String, Vec<String>), anyhow::Error> = connect_and_handshake(
@@ -208,15 +223,27 @@ fn main() -> Result<()> {
                     DEFAULT_PORT,
                     block_height_clone_for_conn,
                     running_network_clone_for_conn,
-                    target_peer_addr,
+                    target_peer_addr_for_thread,
                 );
                 if let Ok((_, peer_addr, new_peers)) = &conn_result {
-                    let mut peer_list_lock = peer_list_clone_for_conn.lock().unwrap();
-                    if !peer_list_lock.contains_key(peer_addr) {
-                        peer_list_lock.insert(peer_addr.clone(), (0, 0)); // Initialize with 0 total traffic if new
+                    let mut active_peers_lock = active_peers_clone_for_conn.lock().unwrap();
+                    active_peers_lock.insert(peer_addr.clone(), (0, 0)); // Initialize session traffic to 0
+
+                    let mut known_peers_lock = known_peers_clone_for_conn.lock().unwrap();
+                    if !known_peers_lock.contains_key(peer_addr) {
+                        known_peers_lock.insert(peer_addr.clone(), (0, 0)); // Add to known_peers if new
                     }
+
                     messages_clone_for_logging.lock().unwrap().push((format!("Connected to: {}", peer_addr), SystemTime::now()));
-                    discovered_peers_queue_for_conn.lock().unwrap().extend(new_peers.clone());
+                    let mut discovered_peers_queue_lock = discovered_peers_queue_for_conn.lock().unwrap();
+                    for new_peer in new_peers.iter() {
+                        if !discovered_peers_queue_lock.contains(new_peer) {
+                            discovered_peers_queue_lock.push(new_peer.clone());
+                        }
+                        if !known_peers_lock.contains_key(new_peer) {
+                            known_peers_lock.insert(new_peer.clone(), (0, 0)); // Add to known_peers if new
+                        }
+                    }
                 }
                 let _ = tx_conn.send(conn_result);
             });
@@ -227,10 +254,27 @@ fn main() -> Result<()> {
                 },
                 Ok(Err(e)) => {
                     add_message(format!("[ERROR] Failed to connect and handshake: {}. Trying next peer...", e));
+                    // Re-add failed peer to discovered_peers_queue for retry with backoff
+                    if let Some(failed_peer) = target_peer_addr {
+                        let mut discovered_peers_queue_lock = discovered_peers_queue_network.lock().unwrap();
+                        // Only re-add if not already in queue to avoid duplicates
+                        if !discovered_peers_queue_lock.contains(&failed_peer) {
+                            discovered_peers_queue_lock.push(failed_peer.clone());
+                            add_message(format!("[INFO] Re-added {} to discovery queue for retry.", failed_peer));
+                        }
+                    }
                     Err(e)
                 },
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                     add_message("[WARN] Connection and handshake timed out after 10 seconds. Trying next peer...".to_string());
+                    // Re-add timed out peer to discovered_peers_queue for retry with backoff
+                    if let Some(timed_out_peer) = target_peer_addr {
+                        let mut discovered_peers_queue_lock = discovered_peers_queue_network.lock().unwrap();
+                        if !discovered_peers_queue_lock.contains(&timed_out_peer) {
+                            discovered_peers_queue_lock.push(timed_out_peer.clone());
+                            add_message(format!("[INFO] Re-added {} to discovery queue for retry (timeout).", timed_out_peer));
+                        }
+                    }
                     Err(anyhow::anyhow!("Connection timeout"))
                 },
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
@@ -240,7 +284,8 @@ fn main() -> Result<()> {
             };
 
             if let Ok((mut stream, connected_peer_addr, _)) = stream_result {
-                let peer_list_clone_for_peer_thread = Arc::clone(&peer_list_network);
+                let active_peers_clone_for_peer_thread = Arc::clone(&active_peers_network);
+                let known_peers_clone_for_peer_thread = Arc::clone(&known_peers_network);
                 let messages_clone_for_peer_thread = Arc::clone(&messages_network);
                 let running_network_clone_for_peer_thread = Arc::clone(&running_network);
                 let peer_addr_for_peer_thread = connected_peer_addr.clone();
@@ -250,10 +295,7 @@ fn main() -> Result<()> {
                         messages_clone_for_peer_thread.lock().unwrap().push((format!("[{}] {}", peer_addr_for_peer_thread, msg), SystemTime::now()));
                     };
 
-                    let (mut inbound_traffic, mut outbound_traffic) = {
-                        let peer_list_lock = peer_list_clone_for_peer_thread.lock().unwrap();
-                        peer_list_lock.get(&peer_addr_for_peer_thread).cloned().unwrap_or((0, 0))
-                    };
+                    let (mut session_inbound_traffic, mut session_outbound_traffic) = (0, 0);
                     let mut last_traffic_update = Instant::now();
 
                     add_message_for_peer("Entering message processing loop...".to_string());
@@ -265,7 +307,7 @@ fn main() -> Result<()> {
                             if let Err(e) = stream.write_all(&mempool_message) {
                                 add_message_for_peer(format!("[ERROR] Failed to send mempool request: {}", e));
                             } else {
-                                outbound_traffic += mempool_message.len() as u64;
+                                session_outbound_traffic += mempool_message.len() as u64;
                                 add_message_for_peer("Sent 'mempool' request.".to_string());
                             }
                         },
@@ -280,12 +322,12 @@ fn main() -> Result<()> {
                             break; // Exit inner loop
                         }
 
-                        // Periodically update traffic in the shared peer_list
+                        // Periodically update session traffic in active_peers
                         if last_traffic_update.elapsed() >= Duration::from_secs(1) {
-                            let mut peer_list_lock = peer_list_clone_for_peer_thread.lock().unwrap();
-                            if let Some(peer_entry) = peer_list_lock.get_mut(&peer_addr_for_peer_thread) {
-                                peer_entry.0 = inbound_traffic; // Update total inbound traffic
-                                peer_entry.1 = outbound_traffic; // Update total outbound traffic
+                            let mut active_peers_lock = active_peers_clone_for_peer_thread.lock().unwrap();
+                            if let Some(peer_entry) = active_peers_lock.get_mut(&peer_addr_for_peer_thread) {
+                                peer_entry.0 = session_inbound_traffic; // Update session inbound traffic
+                                peer_entry.1 = session_outbound_traffic; // Update session outbound traffic
                             }
                             last_traffic_update = Instant::now();
                         }
@@ -296,7 +338,7 @@ fn main() -> Result<()> {
 
                         match read_message(&mut stream) {
                             Ok((header, payload)) => {
-                                inbound_traffic += (header.len() + payload.len()) as u64;
+                                session_inbound_traffic += (header.len() + payload.len()) as u64;
                                 let command_result = std::str::from_utf8(&header[4..16]);
                                 match command_result {
                                     Ok(command) => {
@@ -319,7 +361,7 @@ fn main() -> Result<()> {
                                                                                                                 if let Err(e) = stream.write_all(&pong_message) {
                                                                                                                     add_message_for_peer(format!("[ERROR] Failed to send pong: {}", e));
                                                                                                                 } else {
-                                                                                                                    outbound_traffic += pong_message.len() as u64;
+                                                                                                                    session_outbound_traffic += pong_message.len() as u64;
                                                                                                                     add_message_for_peer("[SENT] 'pong' message.".to_string());
                                                                                                                 }                                                        },
                                                         Err(e) => add_message_for_peer(format!("[ERROR] Failed to build pong message: {}", e)),
@@ -378,7 +420,7 @@ fn main() -> Result<()> {
                                                                                             if let Err(e) = stream.write_all(&ping_message) {
                                                                                                 add_message_for_peer(format!("[ERROR] Failed to send ping: {}", e));
                                                                                             } else {
-                                                                                                outbound_traffic += ping_message.len() as u64;
+                                                                                                session_outbound_traffic += ping_message.len() as u64;
                                                                                                 add_message_for_peer("[SENT] 'ping' message with nonce.".to_string());
                                                                                             }                                            },
                                             Err(e) => add_message_for_peer(format!("[ERROR] Failed to build ping message: {}", e)),
@@ -391,14 +433,16 @@ fn main() -> Result<()> {
                             }
                         }
                     }
-                    add_message_for_peer(format!("Disconnected from {}. Total In: {} B, Total Out: {} B", peer_addr_for_peer_thread, inbound_traffic, outbound_traffic));
-                    // Update traffic before removing the peer
-                    if let Some(peer_entry) = peer_list_clone_for_peer_thread.lock().unwrap().get_mut(&peer_addr_for_peer_thread) {
-                        peer_entry.0 = inbound_traffic;
-                        peer_entry.1 = outbound_traffic;
-                    }
-                    // No longer remove the peer here, as we want to keep its total traffic in the map
-                    // peer_list_clone_for_peer_thread.lock().unwrap().remove(&peer_addr_for_peer_thread);
+                    add_message_for_peer(format!("Disconnected from {}. Session In: {} B, Session Out: {} B", peer_addr_for_peer_thread, session_inbound_traffic, session_outbound_traffic));
+                    // Update known_peers with cumulative traffic and remove from active_peers
+                    let mut known_peers_lock = known_peers_clone_for_peer_thread.lock().unwrap();
+                    known_peers_lock.entry(peer_addr_for_peer_thread.clone()).and_modify(|(total_in, total_out)| {
+                        *total_in += session_inbound_traffic;
+                        *total_out += session_outbound_traffic;
+                    }).or_insert((session_inbound_traffic, session_outbound_traffic));
+
+                    let mut active_peers_lock = active_peers_clone_for_peer_thread.lock().unwrap();
+                    active_peers_lock.remove(&peer_addr_for_peer_thread);
                 });
             } else {
                 std::thread::sleep(Duration::from_secs(2)); // Wait a bit before retrying connection attempt
@@ -411,7 +455,7 @@ fn main() -> Result<()> {
     let mut terminal = init_tui()?;
 
     // 4. Create App instance
-    let mut app = App::new(Arc::clone(&messages), Arc::clone(&running), Arc::clone(&block_height), Arc::clone(&peer_list));
+    let mut app = App::new(Arc::clone(&messages), Arc::clone(&running), Arc::clone(&block_height), Arc::clone(&active_peers));
 
     // 5. Run the TUI application loop
     // The `App::run` method will draw messages from `app.messages` and handle user input.

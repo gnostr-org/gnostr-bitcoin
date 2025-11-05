@@ -1,8 +1,8 @@
-
-
+ //use time::Duration;
+use std::net::ToSocketAddrs;
 use std::io::{Read, Write};
 use std::net::TcpStream;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use sha2::{Digest, Sha256};
 use log::{info, error, warn, debug, LevelFilter};
 use simplelog::{CombinedLogger, WriteLogger, Config};
@@ -100,22 +100,43 @@ pub fn connect_and_handshake(
     }
 
     for addr_to_try in addresses_to_try.iter() {
-                if !running.load(Ordering::SeqCst) {
-                    return Err(anyhow::anyhow!("Shutdown signal received, aborting connection attempt."));
+        if !running.load(Ordering::SeqCst) {
+            return Err(anyhow::anyhow!("Shutdown signal received, aborting connection attempt."));
+        }
+        info!("[FLOW] Trying to connect to {}", addr_to_try);
+
+        let socket_addresses = match addr_to_try.to_socket_addrs() {
+            Ok(addrs) => addrs,
+            Err(e) => {
+                info!("[INFO] Failed to resolve address {}: {}. Trying next...", addr_to_try, e);
+                continue;
+            }
+        };
+
+        let mut connected_stream: Option<TcpStream> = None;
+        for socket_addr in socket_addresses {
+            info!("[FLOW] Attempting to connect to resolved address: {}", socket_addr);
+            match TcpStream::connect_timeout(&socket_addr, Duration::from_secs(5)) {
+                Ok(s) => {
+                    s.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
+                    info!("[INFO] Connected successfully to {}.", socket_addr);
+                    connected_stream = Some(s);
+                    break; // Connected to one, no need to try others for this addr_to_try
                 }
-                info!("[FLOW] Trying to connect to {}", addr_to_try);
-                let mut stream = match TcpStream::connect(addr_to_try) {
-                    Ok(s) => {
-                        s.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
-                        info!("[INFO] Connected successfully to {}.", addr_to_try);
-                        s
-                    }
-                    Err(e) => {
-                        info!("[INFO] Failed to connect to {}: {}. Trying next...", addr_to_try, e);
-                        continue;
-                    }
-                };
-                let peer_addr = stream.peer_addr()?.to_string();
+                Err(e) => {
+                    info!("[INFO] Failed to connect to {}: {}. Trying next resolved address...", socket_addr, e);
+                    continue;
+                }
+            }
+        }
+
+        let mut stream = match connected_stream {
+            Some(s) => s,
+            None => {
+                info!("[INFO] Failed to connect to any resolved address for {}. Trying next seed...", addr_to_try);
+                continue;
+            }
+        };                let peer_addr = stream.peer_addr()?.to_string();
                 let peer_addr_for_closure = peer_addr.clone();
         
                 // Attempt handshake
