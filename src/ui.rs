@@ -169,46 +169,16 @@ impl App {
             terminal.draw(|f| {
                 // Check if it's the first start and no peers are connected, and splash screen hasn't been shown yet
                 if !self.splash_screen_shown && self.peer_list.lock().unwrap().is_empty() {
-                    // Render splash screen with BITCOIN_LOGO_LARGE
+                    // Render splash screen with BITCOIN_LOGO_LARGE to fill the screen
                     let logo_area = f.size(); // Use the full screen for the splash screen
-
-                    // Calculate vertical margins to center the logo
-                    let vertical_margin_total = logo_area.height.saturating_sub(LOGO_LARGE_HEIGHT);
-                    let top_margin = vertical_margin_total / 2;
-                    let bottom_margin = vertical_margin_total.saturating_sub(top_margin);
-
-                    // Calculate horizontal margins to center the logo
-                    let horizontal_margin_total = logo_area.width.saturating_sub(LOGO_WIDTH);
-                    let left_margin = horizontal_margin_total / 2;
-                    let right_margin = horizontal_margin_total.saturating_sub(left_margin);
-
-                    // Create a vertical layout for centering
-                    let centered_layout_vertical = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([
-                            Constraint::Length(top_margin),
-                            Constraint::Length(LOGO_LARGE_HEIGHT),
-                            Constraint::Length(bottom_margin),
-                        ])
-                        .split(logo_area);
-
-                    // Create a horizontal layout for centering within the vertical middle chunk
-                    let centered_layout_horizontal = Layout::default()
-                        .direction(Direction::Horizontal)
-                        .constraints([
-                            Constraint::Length(left_margin),
-                            Constraint::Length(LOGO_WIDTH),
-                            Constraint::Length(right_margin),
-                        ])
-                        .split(centered_layout_vertical[1]); // Use the middle chunk from vertical split
 
                     let logo_lines: Vec<Line> = BITCOIN_LOGO_LARGE.iter().map(|line| Line::from(Span::raw(*line))).collect();
                     let logo_widget = Paragraph::new(logo_lines)
                         .block(Block::default().borders(Borders::ALL).title("Bitcoin P2P Client").border_style(Style::default().fg(Color::Yellow))) // Neutral border style
                         .style(Style::default().fg(Color::Yellow)); // Neutral text style
 
-                    // Render the logo widget in the center chunk
-                    f.render_widget(logo_widget, centered_layout_horizontal[1]);
+                    // Render the logo widget to fill the entire area
+                    f.render_widget(logo_widget, logo_area);
 
                     // Set splash_screen_shown to true after rendering it once
                     self.splash_screen_shown = true;
@@ -330,17 +300,19 @@ impl App {
 
                     // GEMINI - each peer in the list should be selectable which reveals other traits
                     // common to the bitcoin core peer list detail view
-                    let peer_list_content: Vec<Line> = self.peer_list.lock().unwrap().iter()
-                        .map(|(peer_addr, bytes_transferred)| Line::from(Span::raw(format!("{} In: {} B, Out: {} B", peer_addr, bytes_transferred.0, bytes_transferred.1))))
-                        .collect();
+                    if self.peer_list_width_percentage > 0 {
+                        let peer_list_content: Vec<Line> = self.peer_list.lock().unwrap().iter()
+                            .map(|(peer_addr, bytes_transferred)| Line::from(Span::raw(format!("{} In: {} B, Out: {} B", peer_addr, bytes_transferred.0, bytes_transferred.1))))
+                            .collect();
 
-                    let peer_list_widget = Paragraph::new(peer_list_content)
-                        .block(Block::default().borders(Borders::ALL).title("Peers").border_style(match self.focused_widget {
-                            FocusedWidget::PeerList => Style::default().fg(Color::Magenta),
-                            _ => Style::default().fg(Color::Yellow),
-                        }))
-                        .style(Style::default().fg(Color::Yellow));
-                    f.render_widget(peer_list_widget, bottom_half_chunks[1]);
+                        let peer_list_widget = Paragraph::new(peer_list_content)
+                            .block(Block::default().borders(Borders::ALL).title("Peers").border_style(match self.focused_widget {
+                                FocusedWidget::PeerList => Style::default().fg(Color::Magenta),
+                                _ => Style::default().fg(Color::Yellow),
+                            }))
+                            .style(Style::default().fg(Color::Yellow));
+                        f.render_widget(peer_list_widget, bottom_half_chunks[1]);
+                    }
                 }
             })?;
 
