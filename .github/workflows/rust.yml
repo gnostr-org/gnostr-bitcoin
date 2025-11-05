@@ -53,6 +53,9 @@ jobs:
           show-progress: false
       - name: Dependency Review
         uses: actions/dependency-review-action@v4.8.1
+        with:
+          base-ref: ${{ github.event.pull_request.base.sha || github.event.before || github.ref }}
+          head-ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Build
         run: cargo build --verbose
       - name: Run tests
