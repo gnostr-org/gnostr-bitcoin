@@ -81,7 +81,7 @@ fn main() -> Result<()> {
         log::error!("Failed to load known peers on startup: {}", e);
         std::collections::HashMap::new()
     })));
-    let active_peers = Arc::new(Mutex::new(std::collections::HashMap::<String, (u64, u64)>::new()));
+    let active_peers = Arc::new(Mutex::new(std::collections::HashMap::<String, (u64, u64, SystemTime)>::new()));
     let discovered_peers_queue = Arc::new(Mutex::new(Vec::<String>::new()));
 
     // Populate discovered_peers_queue with known peers
@@ -186,7 +186,7 @@ fn main() -> Result<()> {
                 // On shutdown, ensure known_peers is updated with the latest active_peers traffic
                 let mut known_peers_lock = known_peers_network.lock().unwrap();
                 let active_peers_lock = active_peers_network.lock().unwrap();
-                for (addr, (in_traffic, out_traffic)) in active_peers_lock.iter() {
+                for (addr, (in_traffic, out_traffic, _connection_time)) in active_peers_lock.iter() {
                     known_peers_lock.entry(addr.clone()).and_modify(|(total_in, total_out)| {
                         *total_in += in_traffic;
                         *total_out += out_traffic;
@@ -227,7 +227,7 @@ fn main() -> Result<()> {
                 );
                 if let Ok((_, peer_addr, new_peers)) = &conn_result {
                     let mut active_peers_lock = active_peers_clone_for_conn.lock().unwrap();
-                    active_peers_lock.insert(peer_addr.clone(), (0, 0)); // Initialize session traffic to 0
+                    active_peers_lock.insert(peer_addr.clone(), (0, 0, SystemTime::now())); // Initialize session traffic to 0 and set connection time
 
                     let mut known_peers_lock = known_peers_clone_for_conn.lock().unwrap();
                     if !known_peers_lock.contains_key(peer_addr) {
@@ -328,6 +328,7 @@ fn main() -> Result<()> {
                             if let Some(peer_entry) = active_peers_lock.get_mut(&peer_addr_for_peer_thread) {
                                 peer_entry.0 = session_inbound_traffic; // Update session inbound traffic
                                 peer_entry.1 = session_outbound_traffic; // Update session outbound traffic
+                                // peer_entry.2 (SystemTime) remains unchanged
                             }
                             last_traffic_update = Instant::now();
                         }

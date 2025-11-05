@@ -105,7 +105,7 @@ pub struct App {
     pub running: Arc<AtomicBool>,
     pub block_height: Arc<Mutex<i32>>,
     pub block_hash: Arc<Mutex<String>>,
-    pub peer_list: Arc<Mutex<HashMap<String, (u64, u64)>>>,
+    pub peer_list: Arc<Mutex<HashMap<String, (u64, u64, SystemTime)>>>,
     pub focused_widget: FocusedWidget,
     last_user_input_time: Instant,
     auto_scroll_enabled: bool,
@@ -118,7 +118,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(messages: Arc<Mutex<Vec<(String, SystemTime)>>>, running: Arc<AtomicBool>, block_height: Arc<Mutex<i32>>, peer_list: Arc<Mutex<HashMap<String, (u64, u64)>>>) -> App {
+    pub fn new(messages: Arc<Mutex<Vec<(String, SystemTime)>>>, running: Arc<AtomicBool>, block_height: Arc<Mutex<i32>>, peer_list: Arc<Mutex<HashMap<String, (u64, u64, SystemTime)>>>) -> App {
         App {
             messages,
             scroll_state: 0,
@@ -289,7 +289,15 @@ impl App {
                             f.render_widget(connecting_widget, bottom_half_chunks[1]); // Assuming bottom_half_chunks[1] is correct for the peer list pane
                         } else {
                             // If the list is not empty, render the actual peer list
-                            let peer_list_content: Vec<Line> = peer_list_lock.iter()
+                            let mut sorted_peers: Vec<(&String, &(u64, u64, SystemTime))> = peer_list_lock.iter().collect();
+                            sorted_peers.sort_by(|a, b| {
+                                // Sort by inbound traffic (descending)
+                                b.1.0.cmp(&a.1.0)
+                                    // Then by connection time (ascending)
+                                    .then_with(|| a.1.2.cmp(&b.1.2))
+                            });
+
+                            let peer_list_content: Vec<Line> = sorted_peers.into_iter()
                                 .map(|(peer_addr, bytes_transferred)| Line::from(Span::raw(format!("{} In: {} B, Out: {} B", peer_addr, bytes_transferred.0, bytes_transferred.1))))
                                 .collect();
 
