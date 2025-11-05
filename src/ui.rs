@@ -130,24 +130,10 @@ impl App {
                     .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
                     .split(chunks[2]);
 
-                // GEMINI - each peer in the list should be selectable which reveals other traits
-                // common to the bitcoin core peer list detail view
-                let peer_list_content: Vec<Line> = self.peer_list.lock().unwrap().iter()
-                    .map(|(peer_addr, inbound, outbound)| Line::from(Span::raw(format!("{} In: {} B, Out: {} B", peer_addr, inbound, outbound))))
-                    .collect();
-
-                let peer_list_widget = Paragraph::new(peer_list_content)
-                    .block(Block::default().borders(Borders::ALL).title("Peers").border_style(match self.focused_widget {
-                        FocusedWidget::PeerList => Style::default().fg(Color::Magenta),
-                        _ => Style::default().fg(Color::Yellow),
-                    }))
-                    .style(Style::default().fg(Color::Yellow));
-                f.render_widget(peer_list_widget, bottom_half_chunks[0]);
-
                 if self.log_visible {
                     let messages = self.messages.lock().unwrap();
                     let num_messages = messages.len();
-                    let log_area_height = bottom_half_chunks[1].height;
+                    let log_area_height = bottom_half_chunks[0].height;
                     let log_height = {
                         let content_height = if num_messages == 0 { 1 } else { num_messages };
                         let desired_height = (content_height + 2) as u16; // +2 for borders
@@ -173,8 +159,22 @@ impl App {
                         .wrap(Wrap { trim: true })
                         .scroll((self.current_scroll_y.round() as u16, 0));
 
-                    f.render_widget(paragraph, bottom_half_chunks[1]);
+                    f.render_widget(paragraph, bottom_half_chunks[0]);
                 }
+
+                // GEMINI - each peer in the list should be selectable which reveals other traits
+                // common to the bitcoin core peer list detail view
+                let peer_list_content: Vec<Line> = self.peer_list.lock().unwrap().iter()
+                    .map(|(peer_addr, inbound, outbound)| Line::from(Span::raw(format!("{} In: {} B, Out: {} B", peer_addr, inbound, outbound))))
+                    .collect();
+
+                let peer_list_widget = Paragraph::new(peer_list_content)
+                    .block(Block::default().borders(Borders::ALL).title("Peers").border_style(match self.focused_widget {
+                        FocusedWidget::PeerList => Style::default().fg(Color::Magenta),
+                        _ => Style::default().fg(Color::Yellow),
+                    }))
+                    .style(Style::default().fg(Color::Yellow));
+                f.render_widget(peer_list_widget, bottom_half_chunks[1]);
             })?;
 
             match rx.recv_timeout(tick_rate) {
@@ -187,9 +187,9 @@ impl App {
                         KeyCode::Tab => {
                             self.focused_widget = match self.focused_widget {
                                 FocusedWidget::BlockHeight => FocusedWidget::Instructions,
-                                FocusedWidget::Instructions => FocusedWidget::PeerList,
-                                FocusedWidget::PeerList => FocusedWidget::Log,
-                                FocusedWidget::Log => FocusedWidget::BlockHeight,
+                                FocusedWidget::Instructions => FocusedWidget::Log,
+                                FocusedWidget::Log => FocusedWidget::PeerList,
+                                FocusedWidget::PeerList => FocusedWidget::BlockHeight,
                             };
                         },
                         KeyCode::Down => {
@@ -219,15 +219,16 @@ impl App {
                         KeyCode::Left => {
                             self.focused_widget = match self.focused_widget {
                                 FocusedWidget::Instructions => FocusedWidget::BlockHeight,
-                                FocusedWidget::PeerList => FocusedWidget::Instructions,
+                                FocusedWidget::PeerList => FocusedWidget::Log,
+                                FocusedWidget::Log => FocusedWidget::Instructions,
                                 _ => self.focused_widget,
                             };
                         },
                         KeyCode::Right => {
                             self.focused_widget = match self.focused_widget {
                                 FocusedWidget::BlockHeight => FocusedWidget::Instructions,
-                                FocusedWidget::Instructions => FocusedWidget::PeerList,
-                                FocusedWidget::PeerList => FocusedWidget::Log,
+                                FocusedWidget::Instructions => FocusedWidget::Log,
+                                FocusedWidget::Log => FocusedWidget::PeerList,
                                 _ => self.focused_widget,
                             };
                         },
