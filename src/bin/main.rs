@@ -11,6 +11,7 @@ use std::{
 };
 
 use anyhow::Result;
+use clap::Parser;
 /// Initializes the logger for the application.
 /// Sets up logging to file and console output.
 use gnostr_bitcoin::ui::{App, init_tui, restore_tui};
@@ -24,6 +25,18 @@ use serde::{Deserialize, Serialize};
 pub const MAX_PEERS: usize = 8;
 /// Filename for storing peer information persistently.
 const PEERS_FILE_NAME: &str = "peers.json";
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Cli {
+    /// Optional: Connect to a specific Bitcoin peer address (e.g., "127.0.0.1:8333")
+    #[arg(short, long)]
+    target_peer_addr: Option<String>,
+
+    /// Optional: Maximum number of concurrent peer connections to maintain
+    #[arg(short, long, default_value_t = MAX_PEERS)]
+    max_peers: usize,
+}
 
 /// Represents information about a connected peer.
 /// Stores address, current session traffic, and total accumulated traffic.
@@ -110,6 +123,10 @@ fn load_peers() -> Result<std::collections::HashMap<String, (u64, u64)>> {
 fn main() -> Result<()> {
     init_logger()?;
 
+    let cli = Cli::parse();
+    let max_peers = cli.max_peers;
+    let target_peer_addr = cli.target_peer_addr;
+
     // Shared state for managing application lifecycle and data across threads.
     let running = Arc::new(AtomicBool::new(true)); // Flag to signal shutdown.
     let messages = Arc::new(Mutex::new(Vec::<(String, SystemTime)>::new())); // Log messages buffer.
@@ -140,8 +157,15 @@ fn main() -> Result<()> {
     let (tx_initial_peers, rx_initial_peers) = std::sync::mpsc::channel();
     let mut handles = Vec::new();
 
-    for &seed_addr_str in DNS_SEEDS.iter() {
-        let seed_addr = seed_addr_str.to_string();
+    // If a target_peer_addr is provided, only try to connect to that peer initially.
+    let initial_addresses_to_try = if let Some(target) = target_peer_addr.clone() {
+        vec![target]
+    } else {
+        DNS_SEEDS.iter().map(|&s| s.to_string()).collect()
+    };
+
+    for seed_addr in initial_addresses_to_try.iter() {
+        let seed_addr = seed_addr.to_string();
         let tx_clone = tx_initial_peers.clone();
         let block_height_clone = Arc::clone(&block_height);
         let running_clone = Arc::clone(&running);
@@ -272,20 +296,20 @@ fn main() -> Result<()> {
 
             // Limit the number of active peer connections.
             let num_connected_peers = active_peers_network.lock().unwrap().len();
-            if num_connected_peers >= MAX_PEERS {
+            if num_connected_peers >= max_peers {
                 std::thread::sleep(Duration::from_secs(5)); // Wait before checking again if max peers reached.
                 continue;
             }
 
             // Get a peer address from the discovery queue to attempt connection.
-            let mut target_peer_addr: Option<String> = None;
+            let mut target_peer_addr_for_conn_attempt: Option<String> = None;
             if let Some(peer) = discovered_peers_queue_network.lock().unwrap().pop() {
-                target_peer_addr = Some(peer);
+                target_peer_addr_for_conn_attempt = Some(peer);
             }
 
             add_message(format!(
                 "Attempting to connect and handshake ({} / {} peers)...",
-                num_connected_peers, MAX_PEERS
+                num_connected_peers, max_peers
             ));
             // Channel for receiving results from the connection attempt thread.
             let (tx_conn, rx_conn) = std::sync::mpsc::channel();
@@ -295,7 +319,7 @@ fn main() -> Result<()> {
             let known_peers_clone_for_conn = Arc::clone(&known_peers_network);
             let messages_clone_for_logging = Arc::clone(&messages_network);
             let discovered_peers_queue_for_conn = Arc::clone(&discovered_peers_queue_network);
-            let target_peer_addr_for_thread = target_peer_addr.clone();
+            let target_peer_addr_for_thread = target_peer_addr_for_conn_attempt.clone();
 
             // Spawn a thread for each connection attempt.
             std::thread::spawn(move || {
@@ -351,7 +375,7 @@ fn main() -> Result<()> {
                         ));
                         // If connection failed, re-add the peer to the queue for a potential retry
                         // later.
-                        if let Some(failed_peer) = target_peer_addr {
+                        if let Some(failed_peer) = target_peer_addr_for_conn_attempt {
                             let mut discovered_peers_queue_lock =
                                 discovered_peers_queue_network.lock().unwrap();
                             if !discovered_peers_queue_lock.contains(&failed_peer) {
@@ -367,7 +391,7 @@ fn main() -> Result<()> {
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                         add_message("[WARN] Connection and handshake timed out after 10 seconds. Trying next peer...".to_string());
                         // If timed out, re-add the peer to the queue for retry.
-                        if let Some(timed_out_peer) = target_peer_addr {
+                        if let Some(timed_out_peer) = target_peer_addr_for_conn_attempt {
                             let mut discovered_peers_queue_lock =
                                 discovered_peers_queue_network.lock().unwrap();
                             if !discovered_peers_queue_lock.contains(&timed_out_peer) {

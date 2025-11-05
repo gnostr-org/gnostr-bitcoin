@@ -34,6 +34,7 @@ serde_json = "1.0"
 sha2 = "0.10.9"
 simplelog = "0.12.2"
 time = { version = "0.3", features = ["macros", "formatting"] }
+clap = { version = "4.5.20", features = ["derive", "env", "cargo"] }
 
 # The profile that 'dist' will build with
 [profile.dist]
