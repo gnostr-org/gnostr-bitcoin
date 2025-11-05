@@ -163,86 +163,13 @@ impl App {
 
         while self.running.load(Ordering::SeqCst) {
             terminal.draw(|f| {
-                let size = f.size();
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(0)].as_ref())
-                    .split(size);
-
-                let block_height_value = *self.block_height.lock().unwrap();
-                let block_hash_value = self.block_hash.lock().unwrap();
-                let block_height_widget = Paragraph::new("")
-                    .block(Block::default().borders(Borders::ALL).title(format!("Block Height: {} Hash: {}", block_height_value, block_hash_value)).border_style(match self.focused_widget {
-                        FocusedWidget::BlockHeight => Style::default().fg(Color::Magenta),
-                        _ => Style::default().fg(Color::White),
-                    }))
-                    .style(Style::default().fg(Color::Cyan));
-                f.render_widget(block_height_widget, chunks[0]);
-
-                let instruction_chunks = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
-                    .split(chunks[1]);
-
-                let instruction_quit = Paragraph::new("Press 'q' to quit.")
-                    .block(Block::default().borders(Borders::ALL).title("Instructions").border_style(match self.focused_widget {
-                        FocusedWidget::Instructions => Style::default().fg(Color::Magenta),
-                        _ => Style::default().fg(Color::Yellow),
-                    }))
-                    .style(Style::default().fg(Color::Yellow));
-                f.render_widget(instruction_quit, instruction_chunks[0]);
-
-                let instruction_scroll_up = Paragraph::new("Press 'Up' to scroll up.")
-                    .block(Block::default().borders(Borders::ALL).title("").border_style(match self.focused_widget {
-                        FocusedWidget::Instructions => Style::default().fg(Color::Magenta),
-                        _ => Style::default().fg(Color::Yellow),
-                    }))
-                    .style(Style::default().fg(Color::Yellow));
-                f.render_widget(instruction_scroll_up, instruction_chunks[1]);
-
-                let peer_list_constraint = Constraint::Percentage(self.peer_list_width_percentage);
-                let log_constraint = Constraint::Percentage(100 - self.peer_list_width_percentage);
-
-                let bottom_half_chunks = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([log_constraint, peer_list_constraint].as_ref())
-                    .split(chunks[2]);
-
-                if self.log_visible {
-                    let messages = self.messages.lock().unwrap();
-                    let num_messages = messages.len();
-                    let log_area_height = bottom_half_chunks[0].height;
-                    let log_height = {
-                        let content_height = if num_messages == 0 { 1 } else { num_messages };
-                        let desired_height = (content_height + 2) as u16; // +2 for borders
-                        std::cmp::min(desired_height, log_area_height)
-                    };
-                    self.log_widget_height = log_height;
-
-                    let formatted_messages: Vec<Line> = messages
-                        .iter()
-                        .map(|(msg, timestamp)| {
-                            let offset_datetime: OffsetDateTime = timestamp.clone().into();
-                            let format = format_description!("[hour]:[minute]:[second]");
-                            Line::from(Span::raw(format!("[{}] {}", offset_datetime.format(&format).unwrap_or_default(), msg)))
-                        })
-                        .collect();
-
-                    let paragraph = Paragraph::new(formatted_messages)
-                        .block(Block::default().borders(Borders::ALL).title("Bitcoin P2P Client Log").border_style(match self.focused_widget {
-                            FocusedWidget::Log => Style::default().fg(Color::Magenta),
-                            _ => Style::default().fg(Color::White),
-                        }))
-                        .style(Style::default().fg(Color::White))
-                        .wrap(Wrap { trim: true })
-                        .scroll((self.current_scroll_y.round() as u16, 0));
-
-                    f.render_widget(paragraph, bottom_half_chunks[0]);
-                } else { // Log is hidden, display Bitcoin logo
-                    let logo_area = bottom_half_chunks[0]; // The area where the logo should be displayed
+                // Check if it's the first start and no peers are connected
+                if self.peer_list.lock().unwrap().is_empty() {
+                    // Render splash screen with BITCOIN_LOGO_LARGE
+                    let logo_area = f.size(); // Use the full screen for the splash screen
 
                     // Calculate vertical margins to center the logo
-                    let vertical_margin_total = logo_area.height.saturating_sub(LOGO_HEIGHT);
+                    let vertical_margin_total = logo_area.height.saturating_sub(LOGO_LARGE_HEIGHT);
                     let top_margin = vertical_margin_total / 2;
                     let bottom_margin = vertical_margin_total.saturating_sub(top_margin);
 
@@ -256,7 +183,7 @@ impl App {
                         .direction(Direction::Vertical)
                         .constraints([
                             Constraint::Length(top_margin),
-                            Constraint::Length(LOGO_HEIGHT),
+                            Constraint::Length(LOGO_LARGE_HEIGHT),
                             Constraint::Length(bottom_margin),
                         ])
                         .split(logo_area);
@@ -271,28 +198,142 @@ impl App {
                         ])
                         .split(centered_layout_vertical[1]); // Use the middle chunk from vertical split
 
-                    let logo_lines: Vec<Line> = BITCOIN_LOGO.iter().map(|line| Line::from(Span::raw(*line))).collect();
+                    let logo_lines: Vec<Line> = BITCOIN_LOGO_LARGE.iter().map(|line| Line::from(Span::raw(*line))).collect();
                     let logo_widget = Paragraph::new(logo_lines)
-                        .block(Block::default().borders(Borders::ALL).title("Bitcoin Logo").border_style(Style::default().fg(Color::Yellow))) // Neutral border style
+                        .block(Block::default().borders(Borders::ALL).title("Bitcoin P2P Client").border_style(Style::default().fg(Color::Yellow))) // Neutral border style
                         .style(Style::default().fg(Color::Yellow)); // Neutral text style
 
                     // Render the logo widget in the center chunk
                     f.render_widget(logo_widget, centered_layout_horizontal[1]);
+                } else { // Existing UI rendering logic
+                    let size = f.size();
+                    let chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(0)].as_ref())
+                        .split(size);
+
+                    let block_height_value = *self.block_height.lock().unwrap();
+                    let block_hash_value = self.block_hash.lock().unwrap();
+                    let block_height_widget = Paragraph::new("")
+                        .block(Block::default().borders(Borders::ALL).title(format!("Block Height: {} Hash: {}", block_height_value, block_hash_value)).border_style(match self.focused_widget {
+                            FocusedWidget::BlockHeight => Style::default().fg(Color::Magenta),
+                            _ => Style::default().fg(Color::White),
+                        }))
+                        .style(Style::default().fg(Color::Cyan));
+                    f.render_widget(block_height_widget, chunks[0]);
+
+                    let instruction_chunks = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                        .split(chunks[1]);
+
+                    let instruction_quit = Paragraph::new("Press 'q' to quit.")
+                        .block(Block::default().borders(Borders::ALL).title("Instructions").border_style(match self.focused_widget {
+                            FocusedWidget::Instructions => Style::default().fg(Color::Magenta),
+                            _ => Style::default().fg(Color::Yellow),
+                        }))
+                        .style(Style::default().fg(Color::Yellow));
+                    f.render_widget(instruction_quit, instruction_chunks[0]);
+
+                    let instruction_scroll_up = Paragraph::new("Press 'Up' to scroll up.")
+                        .block(Block::default().borders(Borders::ALL).title("").border_style(match self.focused_widget {
+                            FocusedWidget::Instructions => Style::default().fg(Color::Magenta),
+                            _ => Style::default().fg(Color::Yellow),
+                        }))
+                        .style(Style::default().fg(Color::Yellow));
+                    f.render_widget(instruction_scroll_up, instruction_chunks[1]);
+
+                    let bottom_half_chunks = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                        .split(chunks[2]);
+
+                    if self.log_visible {
+                        let messages = self.messages.lock().unwrap();
+                        let num_messages = messages.len();
+                        let log_area_height = bottom_half_chunks[0].height;
+                        let log_height = {
+                            let content_height = if num_messages == 0 { 1 } else { num_messages };
+                            let desired_height = (content_height + 2) as u16; // +2 for borders
+                            std::cmp::min(desired_height, log_area_height)
+                        };
+                        self.log_widget_height = log_height;
+
+                        let formatted_messages: Vec<Line> = messages
+                            .iter()
+                            .map(|(msg, timestamp)| {
+                                let offset_datetime: OffsetDateTime = timestamp.clone().into();
+                                let format = format_description!("[hour]:[minute]:[second]");
+                                Line::from(Span::raw(format!("[{}] {}", offset_datetime.format(&format).unwrap_or_default(), msg)))
+                            })
+                            .collect();
+
+                        let paragraph = Paragraph::new(formatted_messages)
+                            .block(Block::default().borders(Borders::ALL).title("Bitcoin P2P Client Log").border_style(match self.focused_widget {
+                                FocusedWidget::Log => Style::default().fg(Color::Magenta),
+                                _ => Style::default().fg(Color::White),
+                            }))
+                            .style(Style::default().fg(Color::White))
+                            .wrap(Wrap { trim: true })
+                            .scroll((self.current_scroll_y.round() as u16, 0));
+
+                        f.render_widget(paragraph, bottom_half_chunks[0]);
+                    } else { // Log is hidden, display Bitcoin logo
+                        let logo_area = bottom_half_chunks[0]; // The area where the logo should be displayed
+
+                        // Calculate vertical margins to center the logo
+                        let vertical_margin_total = logo_area.height.saturating_sub(LOGO_HEIGHT);
+                        let top_margin = vertical_margin_total / 2;
+                        let bottom_margin = vertical_margin_total.saturating_sub(top_margin);
+
+                        // Calculate horizontal margins to center the logo
+                        let horizontal_margin_total = logo_area.width.saturating_sub(LOGO_WIDTH);
+                        let left_margin = horizontal_margin_total / 2;
+                        let right_margin = horizontal_margin_total.saturating_sub(left_margin);
+
+                        // Create a vertical layout for centering
+                        let centered_layout_vertical = Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([
+                                Constraint::Length(top_margin),
+                                Constraint::Length(LOGO_HEIGHT),
+                                Constraint::Length(bottom_margin),
+                            ])
+                            .split(logo_area);
+
+                        // Create a horizontal layout for centering within the vertical middle chunk
+                        let centered_layout_horizontal = Layout::default()
+                            .direction(Direction::Horizontal)
+                            .constraints([
+                                Constraint::Length(left_margin),
+                                Constraint::Length(LOGO_WIDTH),
+                                Constraint::Length(right_margin),
+                            ])
+                            .split(centered_layout_vertical[1]); // Use the middle chunk from vertical split
+
+                        let logo_lines: Vec<Line> = BITCOIN_LOGO.iter().map(|line| Line::from(Span::raw(*line))).collect();
+                        let logo_widget = Paragraph::new(logo_lines)
+                            .block(Block::default().borders(Borders::ALL).title("Bitcoin Logo").border_style(Style::default().fg(Color::Yellow))) // Neutral border style
+                            .style(Style::default().fg(Color::Yellow)); // Neutral text style
+
+                        // Render the logo widget in the center chunk
+                        f.render_widget(logo_widget, centered_layout_horizontal[1]);
+                    }
+
+                    // GEMINI - each peer in the list should be selectable which reveals other traits
+                    // common to the bitcoin core peer list detail view
+                    let peer_list_content: Vec<Line> = self.peer_list.lock().unwrap().iter()
+                        .map(|(peer_addr, bytes_transferred)| Line::from(Span::raw(format!("{} In: {} B, Out: {} B", peer_addr, bytes_transferred.0, bytes_transferred.1))))
+                        .collect();
+
+                    let peer_list_widget = Paragraph::new(peer_list_content)
+                        .block(Block::default().borders(Borders::ALL).title("Peers").border_style(match self.focused_widget {
+                            FocusedWidget::PeerList => Style::default().fg(Color::Magenta),
+                            _ => Style::default().fg(Color::Yellow),
+                        }))
+                        .style(Style::default().fg(Color::Yellow));
+                    f.render_widget(peer_list_widget, bottom_half_chunks[1]);
                 }
-
-                // GEMINI - each peer in the list should be selectable which reveals other traits
-                // common to the bitcoin core peer list detail view
-                let peer_list_content: Vec<Line> = self.peer_list.lock().unwrap().iter()
-                    .map(|(peer_addr, bytes_transferred)| Line::from(Span::raw(format!("{} In: {} B, Out: {} B", peer_addr, bytes_transferred.0, bytes_transferred.1))))
-                    .collect();
-
-                let peer_list_widget = Paragraph::new(peer_list_content)
-                    .block(Block::default().borders(Borders::ALL).title("Peers").border_style(match self.focused_widget {
-                        FocusedWidget::PeerList => Style::default().fg(Color::Magenta),
-                        _ => Style::default().fg(Color::Yellow),
-                    }))
-                    .style(Style::default().fg(Color::Yellow));
-                f.render_widget(peer_list_widget, bottom_half_chunks[1]);
             })?;
 
             match rx.recv_timeout(tick_rate) {
