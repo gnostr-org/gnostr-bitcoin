@@ -21,6 +21,8 @@ struct PeerInfo {
     addr: String,
     inbound_traffic: u64,
     outbound_traffic: u64,
+    total_inbound_traffic: u64,
+    total_outbound_traffic: u64,
 }
 
 fn get_app_data_dir() -> Result<PathBuf> {
@@ -35,11 +37,13 @@ fn save_peers(peers: &std::collections::HashMap<String, (u64, u64)>) -> Result<(
     fs::create_dir_all(&app_data_dir)?;
     let peers_file_path = app_data_dir.join(PEERS_FILE_NAME);
 
-    let serializable_peers: Vec<PeerInfo> = peers.iter().map(|(addr, (inbound, outbound))| {
+    let serializable_peers: Vec<PeerInfo> = peers.iter().map(|(addr, (total_inbound, total_outbound))| {
         PeerInfo {
             addr: addr.clone(),
-            inbound_traffic: *inbound,
-            outbound_traffic: *outbound,
+            inbound_traffic: 0, // This will be updated by the active connection
+            outbound_traffic: 0, // This will be updated by the active connection
+            total_inbound_traffic: *total_inbound,
+            total_outbound_traffic: *total_outbound,
         }
     }).collect();
 
@@ -61,7 +65,7 @@ fn load_peers() -> Result<std::collections::HashMap<String, (u64, u64)>> {
     let json = fs::read_to_string(peers_file_path)?;
     let serializable_peers: Vec<PeerInfo> = serde_json::from_str(&json)?;
     let peers_map: std::collections::HashMap<String, (u64, u64)> = serializable_peers.into_iter().map(|p| {
-        (p.addr, (p.inbound_traffic, p.outbound_traffic))
+        (p.addr, (p.total_inbound_traffic, p.total_outbound_traffic))
     }).collect();
     log::info!("Loaded {} peers.", peers_map.len());
     Ok(peers_map)
@@ -71,65 +75,59 @@ fn main() -> Result<()> {
     init_logger()?;
 
     let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-    let peer_list_for_shutdown = Arc::new(Mutex::new(std::collections::HashMap::<String, (u64, u64)>::new()));
-    let peer_list_for_shutdown_clone = Arc::clone(&peer_list_for_shutdown);
+    let messages = Arc::new(Mutex::new(Vec::<(String, SystemTime)>::new()));
+    let block_height = Arc::new(Mutex::new(0));
+    let peer_list = Arc::new(Mutex::new(load_peers().unwrap_or_else(|e| {
+        log::error!("Failed to load peers on startup: {}", e);
+        std::collections::HashMap::new()
+    })));
+    let discovered_peers_queue = Arc::new(Mutex::new(Vec::<String>::new()));
+
+    // Populate discovered_peers_queue with loaded peers
+    let mut discovered_peers_queue_lock = discovered_peers_queue.lock().unwrap();
+    for (addr, _) in peer_list.lock().unwrap().iter() {
+        discovered_peers_queue_lock.push(addr.clone());
+    }
+    log::info!("Added {} loaded peers to discovery queue.", discovered_peers_queue_lock.len());
+
+    // Clones for Ctrl-C handler
+    let r_ctrlc = running.clone();
+    let peer_list_for_shutdown_ctrlc = Arc::clone(&peer_list);
 
     ctrlc::set_handler(move || {
         log::info!("Ctrl-C received. Initiating shutdown...");
-        r.store(false, Ordering::SeqCst);
-        // Attempt to save peers on shutdown
-        if let Err(e) = save_peers(&peer_list_for_shutdown_clone.lock().unwrap()) {
+        r_ctrlc.store(false, Ordering::SeqCst);
+        if let Err(e) = save_peers(&peer_list_for_shutdown_ctrlc.lock().unwrap()) {
             log::error!("Failed to save peers on shutdown: {}", e);
         }
     }).expect("Error setting Ctrl-C handler");
 
-    // 1. Setup shared state for messages and block height
-    let messages = Arc::new(Mutex::new(Vec::<(String, SystemTime)>::new()));
-    let block_height = Arc::new(Mutex::new(0));
-    let peer_list = Arc::new(Mutex::new(std::collections::HashMap::<String, (u64, u64)>::new()));
-    let discovered_peers_queue = Arc::new(Mutex::new(Vec::<String>::new()));
-
-    // Load peers from file on startup
-    match load_peers() {
-        Ok(loaded_peers) => {
-            let mut discovered_peers_queue_lock = discovered_peers_queue.lock().unwrap();
-            for (addr, _) in loaded_peers.iter() {
-                discovered_peers_queue_lock.push(addr.clone());
-            }
-            log::info!("Added {} loaded peers to discovery queue.", loaded_peers.len());
-        },
-        Err(e) => {
-            log::error!("Failed to load peers on startup: {}", e);
-        }
-    }
-
-    // Clone messages for the network thread
-    let messages_clone = Arc::clone(&messages);
-    let running_network_clone = Arc::clone(&running);
-    let block_height_clone = Arc::clone(&block_height);
-    let peer_list_clone = Arc::clone(&peer_list);
-    let discovered_peers_queue_clone = Arc::clone(&discovered_peers_queue);
-    let peer_list_for_shutdown_network_clone = Arc::clone(&peer_list_for_shutdown);
+    // Clones for network thread
+    let messages_network = Arc::clone(&messages);
+    let running_network = Arc::clone(&running);
+    let block_height_network = Arc::clone(&block_height);
+    let peer_list_network = Arc::clone(&peer_list);
+    let discovered_peers_queue_network = Arc::clone(&discovered_peers_queue);
+    let peer_list_for_shutdown_network_thread = Arc::clone(&peer_list); // This is for the network thread's internal shutdown logic
 
     // 2. Spawn a thread for network operations
     let _network_thread_handle = std::thread::spawn(move || {
         let add_message = |msg: String| {
-            messages_clone.lock().unwrap().push((msg, SystemTime::now()));
+            messages_network.lock().unwrap().push((msg, SystemTime::now()));
         };
 
         add_message("Starting Bitcoin P2P client...".to_string());
 
         loop { // Main loop for managing connections
-            if !running_network_clone.load(Ordering::SeqCst) {
+            if !running_network.load(Ordering::SeqCst) {
                 add_message("Network thread received shutdown signal.".to_string());
                 // Before breaking, ensure the peer_list_for_shutdown is updated with the latest peer_list
-                let current_peer_list = peer_list_clone.lock().unwrap();
-                *peer_list_for_shutdown_network_clone.lock().unwrap() = current_peer_list.clone();
+                let current_peer_list = peer_list_network.lock().unwrap();
+                *peer_list_for_shutdown_network_thread.lock().unwrap() = current_peer_list.clone();
                 break;
             }
 
-            let num_connected_peers = peer_list_clone.lock().unwrap().len();
+            let num_connected_peers = peer_list_network.lock().unwrap().len();
             if num_connected_peers >= MAX_PEERS {
                 std::thread::sleep(Duration::from_secs(5)); // Wait before checking again
                 continue;
@@ -137,17 +135,17 @@ fn main() -> Result<()> {
 
             let mut target_peer_addr: Option<String> = None;
             // Prioritize connecting to discovered peers
-            if let Some(peer) = discovered_peers_queue_clone.lock().unwrap().pop() {
+            if let Some(peer) = discovered_peers_queue_network.lock().unwrap().pop() {
                 target_peer_addr = Some(peer);
             }
 
             add_message(format!("Attempting to connect and handshake ({} / {} peers)...", num_connected_peers, MAX_PEERS));
             let (tx_conn, rx_conn) = std::sync::mpsc::channel();
-            let block_height_clone_for_conn = Arc::clone(&block_height_clone);
-            let running_network_clone_for_conn = Arc::clone(&running_network_clone);
-            let peer_list_clone_for_conn = Arc::clone(&peer_list_clone);
-            let messages_clone_for_logging = Arc::clone(&messages_clone);
-            let discovered_peers_queue_for_conn = Arc::clone(&discovered_peers_queue_clone);
+            let block_height_clone_for_conn = Arc::clone(&block_height_network);
+            let running_network_clone_for_conn = Arc::clone(&running_network);
+            let peer_list_clone_for_conn = Arc::clone(&peer_list_network);
+            let messages_clone_for_logging = Arc::clone(&messages_network);
+            let discovered_peers_queue_for_conn = Arc::clone(&discovered_peers_queue_network);
 
             std::thread::spawn(move || {
                 let conn_result: Result<(TcpStream, String, Vec<String>), anyhow::Error> = connect_and_handshake(
@@ -158,7 +156,10 @@ fn main() -> Result<()> {
                     target_peer_addr,
                 );
                 if let Ok((_, peer_addr, new_peers)) = &conn_result {
-                    peer_list_clone_for_conn.lock().unwrap().insert(peer_addr.clone(), (0, 0));
+                    let mut peer_list_lock = peer_list_clone_for_conn.lock().unwrap();
+                    if !peer_list_lock.contains_key(peer_addr) {
+                        peer_list_lock.insert(peer_addr.clone(), (0, 0)); // Initialize with 0 total traffic if new
+                    }
                     messages_clone_for_logging.lock().unwrap().push((format!("Connected to: {}", peer_addr), SystemTime::now()));
                     discovered_peers_queue_for_conn.lock().unwrap().extend(new_peers.clone());
                 }
@@ -184,9 +185,9 @@ fn main() -> Result<()> {
             };
 
             if let Ok((mut stream, connected_peer_addr, _)) = stream_result {
-                let peer_list_clone_for_peer_thread = Arc::clone(&peer_list_clone);
-                let messages_clone_for_peer_thread = Arc::clone(&messages_clone);
-                let running_network_clone_for_peer_thread = Arc::clone(&running_network_clone);
+                let peer_list_clone_for_peer_thread = Arc::clone(&peer_list_network);
+                let messages_clone_for_peer_thread = Arc::clone(&messages_network);
+                let running_network_clone_for_peer_thread = Arc::clone(&running_network);
                 let peer_addr_for_peer_thread = connected_peer_addr.clone();
 
                 std::thread::spawn(move || {
@@ -194,8 +195,10 @@ fn main() -> Result<()> {
                         messages_clone_for_peer_thread.lock().unwrap().push((format!("[{}] {}", peer_addr_for_peer_thread, msg), SystemTime::now()));
                     };
 
-                    let mut inbound_traffic: u64 = 0;
-                    let mut outbound_traffic: u64 = 0;
+                    let (mut inbound_traffic, mut outbound_traffic) = {
+                        let peer_list_lock = peer_list_clone_for_peer_thread.lock().unwrap();
+                        peer_list_lock.get(&peer_addr_for_peer_thread).cloned().unwrap_or((0, 0))
+                    };
                     let mut last_traffic_update = Instant::now();
 
                     add_message_for_peer("Entering message processing loop...".to_string());
@@ -223,16 +226,14 @@ fn main() -> Result<()> {
                         }
 
                         // Periodically update traffic in the shared peer_list
-                                        if last_traffic_update.elapsed() >= Duration::from_secs(1) {
-                                            let mut peer_list_lock = peer_list_clone_for_peer_thread.lock().unwrap();
-                                            if let Some(peer_entry) = peer_list_lock.iter_mut().find(|(addr, _traffic_tuple)| {
-                                                *addr == &peer_addr_for_peer_thread
-                                            }) {
-                                                peer_entry.1.0 = inbound_traffic; // Accessing the first u64 in the tuple
-                                                peer_entry.1.1 = outbound_traffic; // Accessing the second u64 in the tuple
-                                            }
-                                            last_traffic_update = Instant::now();
-                                        }
+                        if last_traffic_update.elapsed() >= Duration::from_secs(1) {
+                            let mut peer_list_lock = peer_list_clone_for_peer_thread.lock().unwrap();
+                            if let Some(peer_entry) = peer_list_lock.get_mut(&peer_addr_for_peer_thread) {
+                                peer_entry.0 = inbound_traffic; // Update total inbound traffic
+                                peer_entry.1 = outbound_traffic; // Update total outbound traffic
+                            }
+                            last_traffic_update = Instant::now();
+                        }
                         if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(60))) {
                             add_message_for_peer(format!("[ERROR] Failed to set read timeout: {}", e));
                             break; // Exit inner loop
@@ -341,7 +342,8 @@ fn main() -> Result<()> {
                         peer_entry.0 = inbound_traffic;
                         peer_entry.1 = outbound_traffic;
                     }
-                    peer_list_clone_for_peer_thread.lock().unwrap().remove(&peer_addr_for_peer_thread);
+                    // No longer remove the peer here, as we want to keep its total traffic in the map
+                    // peer_list_clone_for_peer_thread.lock().unwrap().remove(&peer_addr_for_peer_thread);
                 });
             } else {
                 std::thread::sleep(Duration::from_secs(2)); // Wait a bit before retrying connection attempt
