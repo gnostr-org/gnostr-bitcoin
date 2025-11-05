@@ -335,29 +335,31 @@ impl App {
                         0.0
                     };
 
-                    if self.focused_widget == FocusedWidget::Log {
-                        if self.auto_scroll_enabled {
-                            // Auto-scroll towards the bottom
-                            if self.current_scroll_y < bottom_scroll_target {
-                                let diff = bottom_scroll_target - self.current_scroll_y;
-                                self.current_scroll_y += diff * self.scroll_animation_speed;
-                                // Snap to bottom if very close
-                                if (bottom_scroll_target - self.current_scroll_y).abs() < 0.1 {
-                                    self.current_scroll_y = bottom_scroll_target;
-                                }
-                            } else if self.current_scroll_y > bottom_scroll_target {
-                                // Ensure we don't scroll past the bottom
+                    // Auto-scroll logic should apply if auto_scroll_enabled is true, regardless of focus
+                    if self.auto_scroll_enabled {
+                        // Auto-scroll towards the bottom
+                        if self.current_scroll_y < bottom_scroll_target {
+                            let diff = bottom_scroll_target - self.current_scroll_y;
+                            self.current_scroll_y += diff * self.scroll_animation_speed;
+                            // Snap to bottom if very close
+                            if (bottom_scroll_target - self.current_scroll_y).abs() < 0.1 {
                                 self.current_scroll_y = bottom_scroll_target;
                             }
-                        } else {
-                            // Manual scroll animation towards target scroll_state
-                            if self.current_scroll_y != self.scroll_state as f32 {
-                                let diff = self.scroll_state as f32 - self.current_scroll_y;
-                                self.current_scroll_y += diff * self.scroll_animation_speed;
-                                // Snap to target if very close
-                                if (self.scroll_state as f32 - self.current_scroll_y).abs() < 0.1 {
-                                    self.current_scroll_y = self.scroll_state as f32;
-                                }
+                        } else if self.current_scroll_y > bottom_scroll_target {
+                            // Ensure we don't scroll past the bottom
+                            self.current_scroll_y = bottom_scroll_target;
+                        }
+                    }
+
+                    // Manual scroll animation should only happen when the log is focused
+                    if self.focused_widget == FocusedWidget::Log {
+                        // Manual scroll animation towards target scroll_state
+                        if self.current_scroll_y != self.scroll_state as f32 {
+                            let diff = self.scroll_state as f32 - self.current_scroll_y;
+                            self.current_scroll_y += diff * self.scroll_animation_speed;
+                            // Snap to target if very close
+                            if (self.scroll_state as f32 - self.current_scroll_y).abs() < 0.1 {
+                                self.current_scroll_y = self.scroll_state as f32;
                             }
                         }
                     }
