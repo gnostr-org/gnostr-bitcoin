@@ -1,17 +1,25 @@
-/// Initializes the logger for the application.
-/// Sets up logging to file and console output.
-use gnostr_bitcoin::ui::{init_tui, restore_tui, App};
-use gnostr_bitcoin::{connect_and_handshake, build_mempool_message, build_ping_message, build_pong_message, read_message, DNS_SEEDS, DEFAULT_PORT, init_logger};
-use std::io::Write;
-use std::net::TcpStream;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::{
+    fs,
+    io::Write,
+    net::TcpStream,
+    path::PathBuf,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
+
 use anyhow::Result;
 use ctrlc;
-use std::path::PathBuf;
-use std::fs;
-use serde::{Serialize, Deserialize};
+/// Initializes the logger for the application.
+/// Sets up logging to file and console output.
+use gnostr_bitcoin::ui::{App, init_tui, restore_tui};
+use gnostr_bitcoin::{
+    DEFAULT_PORT, DNS_SEEDS, build_mempool_message, build_ping_message, build_pong_message,
+    connect_and_handshake, init_logger, read_message,
+};
+use serde::{Deserialize, Serialize};
 
 /// Maximum number of concurrent peer connections allowed.
 pub const MAX_PEERS: usize = 8;
@@ -28,9 +36,11 @@ struct PeerInfo {
     inbound_traffic: u64,
     /// Outbound traffic for the current session (in bytes).
     outbound_traffic: u64,
-    /// Total accumulated inbound traffic since the application started (in bytes).
+    /// Total accumulated inbound traffic since the application started (in
+    /// bytes).
     total_inbound_traffic: u64,
-    /// Total accumulated outbound traffic since the application started (in bytes).
+    /// Total accumulated outbound traffic since the application started (in
+    /// bytes).
     total_outbound_traffic: u64,
 }
 
@@ -44,22 +54,26 @@ fn get_app_data_dir() -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Saves the current list of known peers (with their total traffic) to a JSON file.
-/// This allows for persistent storage of peer data across application runs.
+/// Saves the current list of known peers (with their total traffic) to a JSON
+/// file. This allows for persistent storage of peer data across application
+/// runs.
 fn save_peers(peers: &std::collections::HashMap<String, (u64, u64)>) -> Result<()> {
     let app_data_dir = get_app_data_dir()?;
     let peers_file_path = app_data_dir.join(PEERS_FILE_NAME);
 
     // Map the HashMap to a Vec<PeerInfo> for serialization.
-    let serializable_peers: Vec<PeerInfo> = peers.iter().map(|(addr, (total_inbound, total_outbound))| {
-        PeerInfo {
-            addr: addr.clone(),
-            inbound_traffic: 0, // Session traffic is not saved, only total traffic.
-            outbound_traffic: 0,
-            total_inbound_traffic: *total_inbound,
-            total_outbound_traffic: *total_outbound,
-        }
-    }).collect();
+    let serializable_peers: Vec<PeerInfo> = peers
+        .iter()
+        .map(|(addr, (total_inbound, total_outbound))| {
+            PeerInfo {
+                addr: addr.clone(),
+                inbound_traffic: 0, // Session traffic is not saved, only total traffic.
+                outbound_traffic: 0,
+                total_inbound_traffic: *total_inbound,
+                total_outbound_traffic: *total_outbound,
+            }
+        })
+        .collect();
 
     let json = serde_json::to_string_pretty(&serializable_peers)?;
     fs::write(peers_file_path, json)?;
@@ -74,16 +88,20 @@ fn load_peers() -> Result<std::collections::HashMap<String, (u64, u64)>> {
     let peers_file_path = app_data_dir.join(PEERS_FILE_NAME);
 
     if !peers_file_path.exists() {
-        log::info!("No peers file found at {:?}. Starting with empty peer list.", peers_file_path);
+        log::info!(
+            "No peers file found at {:?}. Starting with empty peer list.",
+            peers_file_path
+        );
         return Ok(std::collections::HashMap::new());
     }
 
     let json = fs::read_to_string(peers_file_path)?;
     let serializable_peers: Vec<PeerInfo> = serde_json::from_str(&json)?;
     // Convert the Vec<PeerInfo> back into a HashMap for efficient lookup.
-    let peers_map: std::collections::HashMap<String, (u64, u64)> = serializable_peers.into_iter().map(|p| {
-        (p.addr, (p.total_inbound_traffic, p.total_outbound_traffic))
-    }).collect();
+    let peers_map: std::collections::HashMap<String, (u64, u64)> = serializable_peers
+        .into_iter()
+        .map(|p| (p.addr, (p.total_inbound_traffic, p.total_outbound_traffic)))
+        .collect();
     log::info!("Loaded {} peers.", peers_map.len());
     Ok(peers_map)
 }
@@ -101,7 +119,10 @@ fn main() -> Result<()> {
         log::error!("Failed to load known peers on startup: {}", e);
         std::collections::HashMap::new()
     }))); // Cache of known peers and their traffic.
-    let active_peers = Arc::new(Mutex::new(std::collections::HashMap::<String, (u64, u64, SystemTime)>::new())); // Currently active connections.
+    let active_peers = Arc::new(Mutex::new(std::collections::HashMap::<
+        String,
+        (u64, u64, SystemTime),
+    >::new())); // Currently active connections.
     let discovered_peers_queue = Arc::new(Mutex::new(Vec::<String>::new())); // Queue for discovered peers to connect to.
 
     // Populate discovery queue with initially known peers.
@@ -109,10 +130,13 @@ fn main() -> Result<()> {
     for (addr, _) in known_peers.lock().unwrap().iter() {
         discovered_peers_queue_lock.push(addr.clone());
     }
-    log::info!("Added {} known peers to discovery queue.", discovered_peers_queue_lock.len());
+    log::info!(
+        "Added {} known peers to discovery queue.",
+        discovered_peers_queue_lock.len()
+    );
     drop(discovered_peers_queue_lock); // Release the lock.
 
-    // --- Initial DNS Seed Discovery --- 
+    // --- Initial DNS Seed Discovery ---
     // Spawn threads to connect to DNS seeds and gather initial peer information.
     let (tx_initial_peers, rx_initial_peers) = std::sync::mpsc::channel();
     let mut handles = Vec::new();
@@ -126,9 +150,15 @@ fn main() -> Result<()> {
 
         let handle = std::thread::spawn(move || {
             let add_message = |msg: String| {
-                messages_clone.lock().unwrap().push((msg, SystemTime::now()));
+                messages_clone
+                    .lock()
+                    .unwrap()
+                    .push((msg, SystemTime::now()));
             };
-            add_message(format!("Attempting initial connection to DNS seed: {}", seed_addr));
+            add_message(format!(
+                "Attempting initial connection to DNS seed: {}",
+                seed_addr
+            ));
             // Attempt to connect and handshake with the DNS seed.
             let conn_result = connect_and_handshake(
                 DNS_SEEDS, // Pass DNS_SEEDS for potential peer discovery during handshake
@@ -138,16 +168,24 @@ fn main() -> Result<()> {
                 Some(seed_addr.clone()), // Target this specific seed
             );
             if let Ok((_, _, new_peers)) = conn_result {
-                add_message(format!("Discovered {} new peers from {}.", new_peers.len(), seed_addr));
+                add_message(format!(
+                    "Discovered {} new peers from {}.",
+                    new_peers.len(),
+                    seed_addr
+                ));
                 let _ = tx_clone.send(new_peers); // Send discovered peers back to main thread.
             } else if let Err(e) = conn_result {
-                add_message(format!("[ERROR] Initial connection to {} failed: {}", seed_addr, e));
+                add_message(format!(
+                    "[ERROR] Initial connection to {} failed: {}",
+                    seed_addr, e
+                ));
             }
         });
         handles.push(handle);
     }
 
-    // Drop the original sender to signal the receiver that no more messages will be sent.
+    // Drop the original sender to signal the receiver that no more messages will be
+    // sent.
     drop(tx_initial_peers);
 
     // Collect results from all initial peer discovery threads.
@@ -155,7 +193,10 @@ fn main() -> Result<()> {
     for new_peers_from_seed in rx_initial_peers.iter() {
         initial_discovered_peers.extend(new_peers_from_seed);
     }
-    log::info!("Collected {} initial peers from DNS seeds.", initial_discovered_peers.len());
+    log::info!(
+        "Collected {} initial peers from DNS seeds.",
+        initial_discovered_peers.len()
+    );
 
     // Add newly discovered peers to the main discovery queue and known peers list.
     let mut discovered_peers_queue_lock = discovered_peers_queue.lock().unwrap();
@@ -168,7 +209,10 @@ fn main() -> Result<()> {
             known_peers_lock.insert(peer, (0, 0)); // Initialize new peers with zero traffic.
         }
     }
-    log::info!("Total peers in discovery queue after initial DNS scan: {}.", discovered_peers_queue_lock.len());
+    log::info!(
+        "Total peers in discovery queue after initial DNS scan: {}.",
+        discovered_peers_queue_lock.len()
+    );
     drop(discovered_peers_queue_lock); // Release lock.
     drop(known_peers_lock); // Release lock.
     // --- End of initial DNS seed discovery ---
@@ -184,7 +228,8 @@ fn main() -> Result<()> {
         if let Err(e) = save_peers(&known_peers_for_shutdown_ctrlc.lock().unwrap()) {
             log::error!("Failed to save peers on shutdown: {}", e);
         }
-    }).expect("Error setting Ctrl-C handler");
+    })
+    .expect("Error setting Ctrl-C handler");
 
     // Clone shared state for the network thread.
     let messages_network = Arc::clone(&messages);
@@ -195,27 +240,35 @@ fn main() -> Result<()> {
     let discovered_peers_queue_network = Arc::clone(&discovered_peers_queue);
 
     // Spawn the network thread.
-    // This thread manages all P2P connections, message handling, and peer discovery.
+    // This thread manages all P2P connections, message handling, and peer
+    // discovery.
     let _network_thread_handle = std::thread::spawn(move || {
         let add_message = |msg: String| {
-            messages_network.lock().unwrap().push((msg, SystemTime::now()));
+            messages_network
+                .lock()
+                .unwrap()
+                .push((msg, SystemTime::now()));
         };
 
         add_message("Starting Bitcoin P2P client...".to_string());
 
         // Main loop for managing network connections and activity.
-        loop { 
+        loop {
             // Check if shutdown has been initiated.
             if !running_network.load(Ordering::SeqCst) {
                 add_message("Network thread received shutdown signal.".to_string());
                 // Update known_peers with traffic from active connections before exiting.
                 let mut known_peers_lock = known_peers_network.lock().unwrap();
                 let active_peers_lock = active_peers_network.lock().unwrap();
-                for (addr, (in_traffic, out_traffic, _connection_time)) in active_peers_lock.iter() {
-                    known_peers_lock.entry(addr.clone()).and_modify(|(total_in, total_out)| {
-                        *total_in += in_traffic;
-                        *total_out += out_traffic;
-                    }).or_insert(( *in_traffic, *out_traffic));
+                for (addr, (in_traffic, out_traffic, _connection_time)) in active_peers_lock.iter()
+                {
+                    known_peers_lock
+                        .entry(addr.clone())
+                        .and_modify(|(total_in, total_out)| {
+                            *total_in += in_traffic;
+                            *total_out += out_traffic;
+                        })
+                        .or_insert((*in_traffic, *out_traffic));
                 }
                 break; // Exit the network loop.
             }
@@ -233,7 +286,10 @@ fn main() -> Result<()> {
                 target_peer_addr = Some(peer);
             }
 
-            add_message(format!("Attempting to connect and handshake ({} / {} peers)...", num_connected_peers, MAX_PEERS));
+            add_message(format!(
+                "Attempting to connect and handshake ({} / {} peers)...",
+                num_connected_peers, MAX_PEERS
+            ));
             // Channel for receiving results from the connection attempt thread.
             let (tx_conn, rx_conn) = std::sync::mpsc::channel();
             let block_height_clone_for_conn = Arc::clone(&block_height_network);
@@ -247,13 +303,15 @@ fn main() -> Result<()> {
             // Spawn a thread for each connection attempt.
             std::thread::spawn(move || {
                 // Attempt to connect and handshake with a peer.
-                let conn_result: Result<(TcpStream, String, Vec<String>), anyhow::Error> = connect_and_handshake(
-                    DNS_SEEDS, // DNS seeds used for initial discovery and potentially during handshake.
-                    DEFAULT_PORT,
-                    block_height_clone_for_conn,
-                    running_network_clone_for_conn,
-                    target_peer_addr_for_thread,
-                );
+                let conn_result: Result<(TcpStream, String, Vec<String>), anyhow::Error> =
+                    connect_and_handshake(
+                        DNS_SEEDS, /* DNS seeds used for initial discovery and potentially
+                                    * during handshake. */
+                        DEFAULT_PORT,
+                        block_height_clone_for_conn,
+                        running_network_clone_for_conn,
+                        target_peer_addr_for_thread,
+                    );
                 // Process the connection result.
                 if let Ok((_, peer_addr, new_peers)) = &conn_result {
                     let mut active_peers_lock = active_peers_clone_for_conn.lock().unwrap();
@@ -266,9 +324,13 @@ fn main() -> Result<()> {
                         known_peers_lock.insert(peer_addr.clone(), (0, 0)); // Add new peer with zero traffic.
                     }
 
-                    messages_clone_for_logging.lock().unwrap().push((format!("Connected to: {}", peer_addr), SystemTime::now()));
+                    messages_clone_for_logging
+                        .lock()
+                        .unwrap()
+                        .push((format!("Connected to: {}", peer_addr), SystemTime::now()));
                     // Add newly discovered peers from the connected peer to the discovery queue.
-                    let mut discovered_peers_queue_lock = discovered_peers_queue_for_conn.lock().unwrap();
+                    let mut discovered_peers_queue_lock =
+                        discovered_peers_queue_for_conn.lock().unwrap();
                     for new_peer in new_peers.iter() {
                         if !discovered_peers_queue_lock.contains(new_peer) {
                             discovered_peers_queue_lock.push(new_peer.clone());
@@ -282,39 +344,50 @@ fn main() -> Result<()> {
             });
 
             // Receive the connection result with a timeout.
-            let stream_result: Result<(TcpStream, String, Vec<String>), anyhow::Error> = match rx_conn.recv_timeout(Duration::from_secs(10)) {
-                Ok(Ok((stream, peer_addr, new_peers))) => {
-                    Ok((stream, peer_addr, new_peers))
-                },
-                Ok(Err(e)) => {
-                    add_message(format!("[ERROR] Failed to connect and handshake: {}. Trying next peer...", e));
-                    // If connection failed, re-add the peer to the queue for a potential retry later.
-                    if let Some(failed_peer) = target_peer_addr {
-                        let mut discovered_peers_queue_lock = discovered_peers_queue_network.lock().unwrap();
-                        if !discovered_peers_queue_lock.contains(&failed_peer) {
-                            discovered_peers_queue_lock.push(failed_peer.clone());
-                            add_message(format!("[INFO] Re-added {} to discovery queue for retry.", failed_peer));
+            let stream_result: Result<(TcpStream, String, Vec<String>), anyhow::Error> =
+                match rx_conn.recv_timeout(Duration::from_secs(10)) {
+                    Ok(Ok((stream, peer_addr, new_peers))) => Ok((stream, peer_addr, new_peers)),
+                    Ok(Err(e)) => {
+                        add_message(format!(
+                            "[ERROR] Failed to connect and handshake: {}. Trying next peer...",
+                            e
+                        ));
+                        // If connection failed, re-add the peer to the queue for a potential retry
+                        // later.
+                        if let Some(failed_peer) = target_peer_addr {
+                            let mut discovered_peers_queue_lock =
+                                discovered_peers_queue_network.lock().unwrap();
+                            if !discovered_peers_queue_lock.contains(&failed_peer) {
+                                discovered_peers_queue_lock.push(failed_peer.clone());
+                                add_message(format!(
+                                    "[INFO] Re-added {} to discovery queue for retry.",
+                                    failed_peer
+                                ));
+                            }
                         }
+                        Err(e)
                     }
-                    Err(e)
-                },
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    add_message("[WARN] Connection and handshake timed out after 10 seconds. Trying next peer...".to_string());
-                    // If timed out, re-add the peer to the queue for retry.
-                    if let Some(timed_out_peer) = target_peer_addr {
-                        let mut discovered_peers_queue_lock = discovered_peers_queue_network.lock().unwrap();
-                        if !discovered_peers_queue_lock.contains(&timed_out_peer) {
-                            discovered_peers_queue_lock.push(timed_out_peer.clone());
-                            add_message(format!("[INFO] Re-added {} to discovery queue for retry (timeout).", timed_out_peer));
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                        add_message("[WARN] Connection and handshake timed out after 10 seconds. Trying next peer...".to_string());
+                        // If timed out, re-add the peer to the queue for retry.
+                        if let Some(timed_out_peer) = target_peer_addr {
+                            let mut discovered_peers_queue_lock =
+                                discovered_peers_queue_network.lock().unwrap();
+                            if !discovered_peers_queue_lock.contains(&timed_out_peer) {
+                                discovered_peers_queue_lock.push(timed_out_peer.clone());
+                                add_message(format!(
+                                    "[INFO] Re-added {} to discovery queue for retry (timeout).",
+                                    timed_out_peer
+                                ));
+                            }
                         }
+                        Err(anyhow::anyhow!("Connection timeout"))
                     }
-                    Err(anyhow::anyhow!("Connection timeout"))
-                },
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    add_message("[ERROR] Connection thread disconnected before sending result. Trying next peer...".to_string());
-                    Err(anyhow::anyhow!("Connection thread disconnected"))
-                },
-            };
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        add_message("[ERROR] Connection thread disconnected before sending result. Trying next peer...".to_string());
+                        Err(anyhow::anyhow!("Connection thread disconnected"))
+                    }
+                };
 
             // If a connection was successfully established and handshake completed:
             if let Ok((mut stream, connected_peer_addr, _)) = stream_result {
@@ -328,7 +401,10 @@ fn main() -> Result<()> {
                 // Spawn a thread to handle communication with this specific peer.
                 std::thread::spawn(move || {
                     let add_message_for_peer = |msg: String| {
-                        messages_clone_for_peer_thread.lock().unwrap().push((format!("[{}] {}", peer_addr_for_peer_thread, msg), SystemTime::now()));
+                        messages_clone_for_peer_thread.lock().unwrap().push((
+                            format!("[{}] {}", peer_addr_for_peer_thread, msg),
+                            SystemTime::now(),
+                        ));
                     };
 
                     let (mut session_inbound_traffic, mut session_outbound_traffic) = (0, 0);
@@ -341,14 +417,20 @@ fn main() -> Result<()> {
                     match build_mempool_message() {
                         Ok(mempool_message) => {
                             if let Err(e) = stream.write_all(&mempool_message) {
-                                add_message_for_peer(format!("[ERROR] Failed to send mempool request: {}", e));
+                                add_message_for_peer(format!(
+                                    "[ERROR] Failed to send mempool request: {}",
+                                    e
+                                ));
                             } else {
                                 session_outbound_traffic += mempool_message.len() as u64;
                                 add_message_for_peer("Sent 'mempool' request.".to_string());
                             }
-                        },
+                        }
                         Err(e) => {
-                            add_message_for_peer(format!("[ERROR] Failed to build mempool message: {}", e));
+                            add_message_for_peer(format!(
+                                "[ERROR] Failed to build mempool message: {}",
+                                e
+                            ));
                         }
                     }
 
@@ -356,23 +438,32 @@ fn main() -> Result<()> {
                     loop {
                         // Check for shutdown signal.
                         if !running_network_clone_for_peer_thread.load(Ordering::SeqCst) {
-                            add_message_for_peer("Peer thread received shutdown signal.".to_string());
+                            add_message_for_peer(
+                                "Peer thread received shutdown signal.".to_string(),
+                            );
                             break; // Exit the peer communication loop.
                         }
 
                         // Periodically update session traffic statistics in the shared state.
                         if last_traffic_update.elapsed() >= Duration::from_secs(1) {
-                            let mut active_peers_lock = active_peers_clone_for_peer_thread.lock().unwrap();
-                            if let Some(peer_entry) = active_peers_lock.get_mut(&peer_addr_for_peer_thread) {
+                            let mut active_peers_lock =
+                                active_peers_clone_for_peer_thread.lock().unwrap();
+                            if let Some(peer_entry) =
+                                active_peers_lock.get_mut(&peer_addr_for_peer_thread)
+                            {
                                 peer_entry.0 = session_inbound_traffic; // Update session inbound traffic.
                                 peer_entry.1 = session_outbound_traffic; // Update session outbound traffic.
-                                // Peer connection time (peer_entry.2) remains unchanged.
+                                // Peer connection time (peer_entry.2) remains
+                                // unchanged.
                             }
                             last_traffic_update = Instant::now();
                         }
                         // Set a read timeout to detect idle connections and send pings.
                         if let Err(e) = stream.set_read_timeout(Some(Duration::from_secs(60))) {
-                            add_message_for_peer(format!("[ERROR] Failed to set read timeout: {}", e));
+                            add_message_for_peer(format!(
+                                "[ERROR] Failed to set read timeout: {}",
+                                e
+                            ));
                             break; // Exit loop on read timeout error.
                         }
 
@@ -386,71 +477,126 @@ fn main() -> Result<()> {
                                 match command_result {
                                     Ok(command) => {
                                         let command = command.trim_end_matches('\0');
-                                        let log_msg = format!("[RECEIVED] Command: '{}', Payload Size: {} bytes", command, payload.len());
+                                        let log_msg = format!(
+                                            "[RECEIVED] Command: '{}', Payload Size: {} bytes",
+                                            command,
+                                            payload.len()
+                                        );
                                         add_message_for_peer(log_msg);
 
                                         // Handle different P2P commands.
                                         match command {
                                             "version" => {
-                                                add_message_for_peer("[INFO] Received 'version' message again.".to_string());
+                                                add_message_for_peer(
+                                                    "[INFO] Received 'version' message again."
+                                                        .to_string(),
+                                                );
                                             }
                                             "verack" => {
-                                                add_message_for_peer("[INFO] Received 'verack' message.".to_string());
+                                                add_message_for_peer(
+                                                    "[INFO] Received 'verack' message.".to_string(),
+                                                );
                                             }
                                             "ping" => {
                                                 add_message_for_peer("[INFO] Received 'ping' message. Sending 'pong'.".to_string());
                                                 // A ping message contains an 8-byte nonce.
-                                                if let Ok(nonce) = payload.try_into().map_err(|_| "Invalid ping nonce size") {
+                                                if let Ok(nonce) = payload
+                                                    .try_into()
+                                                    .map_err(|_| "Invalid ping nonce size")
+                                                {
                                                     match build_pong_message(nonce) {
                                                         Ok(pong_message) => {
-                                                            // Send the pong message back to the peer.
-                                                                                                                if let Err(e) = stream.write_all(&pong_message) {
-                                                                                                                    add_message_for_peer(format!("[ERROR] Failed to send pong: {}", e));
-                                                                                                                } else {
-                                                                                                                    session_outbound_traffic += pong_message.len() as u64;
-                                                                                                                    add_message_for_peer("[SENT] 'pong' message.".to_string());
-                                                                                                                }
-                                                        },
-                                                        Err(e) => add_message_for_peer(format!("[ERROR] Failed to build pong message: {}", e)),
+                                                            // Send the pong message back to the
+                                                            // peer.
+                                                            if let Err(e) =
+                                                                stream.write_all(&pong_message)
+                                                            {
+                                                                add_message_for_peer(format!(
+                                                                    "[ERROR] Failed to send pong: {}",
+                                                                    e
+                                                                ));
+                                                            } else {
+                                                                session_outbound_traffic +=
+                                                                    pong_message.len() as u64;
+                                                                add_message_for_peer(
+                                                                    "[SENT] 'pong' message."
+                                                                        .to_string(),
+                                                                );
+                                                            }
+                                                        }
+                                                        Err(e) => add_message_for_peer(format!(
+                                                            "[ERROR] Failed to build pong message: {}",
+                                                            e
+                                                        )),
                                                     }
                                                 } else {
-                                                    add_message_for_peer("[ERROR] Invalid ping nonce size.".to_string());
+                                                    add_message_for_peer(
+                                                        "[ERROR] Invalid ping nonce size."
+                                                            .to_string(),
+                                                    );
                                                 }
                                             }
                                             "pong" => {
-                                                add_message_for_peer("[INFO] Received 'pong' message.".to_string());
+                                                add_message_for_peer(
+                                                    "[INFO] Received 'pong' message.".to_string(),
+                                                );
                                             }
                                             "mempool" => {
                                                 add_message_for_peer("[INFO] Received 'mempool' response (or another mempool request).".to_string());
                                             }
                                             "inv" => {
-                                                add_message_for_peer("[INFO] Received 'inv' message (inventory).".to_string());
+                                                add_message_for_peer(
+                                                    "[INFO] Received 'inv' message (inventory)."
+                                                        .to_string(),
+                                                );
                                             }
                                             "tx" => {
-                                                add_message_for_peer("[INFO] Received 'tx' message (transaction).".to_string());
+                                                add_message_for_peer(
+                                                    "[INFO] Received 'tx' message (transaction)."
+                                                        .to_string(),
+                                                );
                                             }
                                             "block" => {
-                                                add_message_for_peer("[INFO] Received 'block' message.".to_string());
+                                                add_message_for_peer(
+                                                    "[INFO] Received 'block' message.".to_string(),
+                                                );
                                             }
                                             "headers" => {
-                                                add_message_for_peer("[INFO] Received 'headers' message.".to_string());
+                                                add_message_for_peer(
+                                                    "[INFO] Received 'headers' message."
+                                                        .to_string(),
+                                                );
                                             }
                                             "getheaders" => {
-                                                add_message_for_peer("[INFO] Received 'getheaders' message.".to_string());
+                                                add_message_for_peer(
+                                                    "[INFO] Received 'getheaders' message."
+                                                        .to_string(),
+                                                );
                                             }
                                             "getdata" => {
-                                                add_message_for_peer("[INFO] Received 'getdata' message.".to_string());
+                                                add_message_for_peer(
+                                                    "[INFO] Received 'getdata' message."
+                                                        .to_string(),
+                                                );
                                             }
                                             "addr" => {
-                                                add_message_for_peer("[INFO] Received 'addr' message.".to_string());
+                                                add_message_for_peer(
+                                                    "[INFO] Received 'addr' message.".to_string(),
+                                                );
                                             }
                                             _ => {
-                                                add_message_for_peer(format!("[INFO] Received unhandled command: '{}'", command));
+                                                add_message_for_peer(format!(
+                                                    "[INFO] Received unhandled command: '{}'",
+                                                    command
+                                                ));
                                             }
                                         }
-                                    },
+                                    }
                                     Err(e) => {
-                                        add_message_for_peer(format!("[ERROR] Failed to parse command from header: {}", e));
+                                        add_message_for_peer(format!(
+                                            "[ERROR] Failed to parse command from header: {}",
+                                            e
+                                        ));
                                         break; // Exit loop on command parsing error.
                                     }
                                 }
@@ -459,46 +605,71 @@ fn main() -> Result<()> {
                                 // Handle specific IO errors, like timeouts.
                                 if let Some(io_error) = e.downcast_ref::<std::io::Error>() {
                                     if io_error.kind() == std::io::ErrorKind::TimedOut {
-                                        // If read times out, send a 'ping' message to keep the connection alive.
+                                        // If read times out, send a 'ping' message to keep the
+                                        // connection alive.
                                         add_message_for_peer("[INFO] Read timeout. No data received for 60 seconds. Sending ping...".to_string());
-                                        let nonce_u64 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+                                        let nonce_u64 = SystemTime::now()
+                                            .duration_since(UNIX_EPOCH)
+                                            .unwrap()
+                                            .as_secs();
                                         let mut nonce_bytes = [0u8; 8];
                                         nonce_bytes.copy_from_slice(&nonce_u64.to_le_bytes());
                                         match build_ping_message(nonce_bytes) {
                                             Ok(ping_message) => {
-                                                                                            if let Err(e) = stream.write_all(&ping_message) {
-                                                                                                add_message_for_peer(format!("[ERROR] Failed to send ping: {}", e));
-                                                                                            } else {
-                                                                                                session_outbound_traffic += ping_message.len() as u64;
-                                                                                                add_message_for_peer("[SENT] 'ping' message with nonce.".to_string());
-                                                                                            }
-                                            },
-                                            Err(e) => add_message_for_peer(format!("[ERROR] Failed to build ping message: {}", e)),
+                                                if let Err(e) = stream.write_all(&ping_message) {
+                                                    add_message_for_peer(format!(
+                                                        "[ERROR] Failed to send ping: {}",
+                                                        e
+                                                    ));
+                                                } else {
+                                                    session_outbound_traffic +=
+                                                        ping_message.len() as u64;
+                                                    add_message_for_peer(
+                                                        "[SENT] 'ping' message with nonce."
+                                                            .to_string(),
+                                                    );
+                                                }
+                                            }
+                                            Err(e) => add_message_for_peer(format!(
+                                                "[ERROR] Failed to build ping message: {}",
+                                                e
+                                            )),
                                         }
                                         continue; // Continue the loop to wait for a response (pong).
                                     }
                                 }
                                 // For any other read errors, log the error and break.
-                                add_message_for_peer(format!("[ERROR] Failed to read message: {}", e));
+                                add_message_for_peer(format!(
+                                    "[ERROR] Failed to read message: {}",
+                                    e
+                                ));
                                 break; // Exit loop on other read errors.
                             }
                         }
                     }
                     // When the peer loop breaks (e.g., due to error or shutdown),
                     // update known_peers with the total traffic and remove from active_peers.
-                    add_message_for_peer(format!("Disconnected from {}. Session In: {} B, Session Out: {} B", peer_addr_for_peer_thread, session_inbound_traffic, session_outbound_traffic));
+                    add_message_for_peer(format!(
+                        "Disconnected from {}. Session In: {} B, Session Out: {} B",
+                        peer_addr_for_peer_thread,
+                        session_inbound_traffic,
+                        session_outbound_traffic
+                    ));
                     let mut known_peers_lock = known_peers_clone_for_peer_thread.lock().unwrap();
-                    known_peers_lock.entry(peer_addr_for_peer_thread.clone()).and_modify(|(total_in, total_out)| {
-                        *total_in += session_inbound_traffic;
-                        *total_out += session_outbound_traffic;
-                    }).or_insert((session_inbound_traffic, session_outbound_traffic));
+                    known_peers_lock
+                        .entry(peer_addr_for_peer_thread.clone())
+                        .and_modify(|(total_in, total_out)| {
+                            *total_in += session_inbound_traffic;
+                            *total_out += session_outbound_traffic;
+                        })
+                        .or_insert((session_inbound_traffic, session_outbound_traffic));
 
                     let mut active_peers_lock = active_peers_clone_for_peer_thread.lock().unwrap();
                     active_peers_lock.remove(&peer_addr_for_peer_thread);
                 });
             } else {
                 // If connection attempt failed, wait a bit before the next attempt.
-                std::thread::sleep(Duration::from_secs(2)); 
+                std::thread::sleep(Duration::from_secs(2));
             }
         }
         add_message("Network thread finished. Press 'q' to exit TUI.".to_string());
@@ -508,11 +679,17 @@ fn main() -> Result<()> {
     let mut terminal = init_tui()?;
 
     // Create the application state instance.
-    let mut app = App::new(Arc::clone(&messages), Arc::clone(&running), Arc::clone(&block_height), Arc::clone(&active_peers));
+    let mut app = App::new(
+        Arc::clone(&messages),
+        Arc::clone(&running),
+        Arc::clone(&block_height),
+        Arc::clone(&active_peers),
+    );
 
     // Run the TUI application loop.
     // This loop handles drawing the UI and processing user input events.
-    // It will return an error if the network thread exits unexpectedly, triggering `restore_tui`.
+    // It will return an error if the network thread exits unexpectedly, triggering
+    // `restore_tui`.
     app.run(&mut terminal)?;
 
     // Restore the terminal to its original state upon application exit.

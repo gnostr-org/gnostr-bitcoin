@@ -1,19 +1,28 @@
-use std::collections::HashMap;
-use std::{io, sync::{mpsc, Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant, SystemTime}};
-use time::{OffsetDateTime, macros::format_description};
+use std::{
+    collections::HashMap,
+    io,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    },
+    time::{Duration, Instant, SystemTime},
+};
+
 use crossterm::{
     event::{self, Event as CEvent, KeyCode},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{
+    Terminal,
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
-    Terminal,
 };
+use time::{OffsetDateTime, macros::format_description};
 
 #[rustfmt::skip]
 const BITCOIN_LOGO: [&str; 15] = [
@@ -49,7 +58,6 @@ const BITCOIN_ICON: [&str; 9] = [
    "⢰⣶⣿⣿⣿⣷⣶⣶⣾⣿⣿⠿⠛⠁",
    "⠀⠀⠀⠀⣿⡇⠀⢸⣿⡇⠀⠀⠀⠀",
 ];
-
 
 #[rustfmt::skip]
 const BITCOIN_LOGO_LARGE: [&str; 30] = [
@@ -109,7 +117,7 @@ pub struct App {
     pub focused_widget: FocusedWidget,
     last_user_input_time: Instant,
     auto_scroll_enabled: bool,
-    current_scroll_y: f32, // Animated scroll position
+    current_scroll_y: f32,       // Animated scroll position
     scroll_animation_speed: f32, // Controls animation speed
     log_widget_height: u16,
     pub log_visible: bool,
@@ -118,7 +126,12 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(messages: Arc<Mutex<Vec<(String, SystemTime)>>>, running: Arc<AtomicBool>, block_height: Arc<Mutex<i32>>, peer_list: Arc<Mutex<HashMap<String, (u64, u64, SystemTime)>>>) -> App {
+    pub fn new(
+        messages: Arc<Mutex<Vec<(String, SystemTime)>>>,
+        running: Arc<AtomicBool>,
+        block_height: Arc<Mutex<i32>>,
+        peer_list: Arc<Mutex<HashMap<String, (u64, u64, SystemTime)>>>,
+    ) -> App {
         App {
             messages,
             scroll_state: 0,
@@ -129,7 +142,7 @@ impl App {
             focused_widget: FocusedWidget::Log,
             last_user_input_time: Instant::now(),
             auto_scroll_enabled: true,
-            current_scroll_y: 0.0, // Initialize animated scroll position
+            current_scroll_y: 0.0,       // Initialize animated scroll position
             scroll_animation_speed: 0.1, // Initialize animation speed
             log_widget_height: 0,
             log_visible: true,
@@ -138,7 +151,10 @@ impl App {
         }
     }
 
-    pub fn run(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> anyhow::Result<()> {
+    pub fn run(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    ) -> anyhow::Result<()> {
         let (tx, rx) = mpsc::channel();
         let tick_rate = Duration::from_millis(250);
         let running_clone = self.running.clone();
@@ -167,14 +183,23 @@ impl App {
 
         while self.running.load(Ordering::SeqCst) {
             terminal.draw(|f| {
-                // Check if it's the first start and no peers are connected, and splash screen hasn't been shown yet
+                // Check if it's the first start and no peers are connected, and splash screen
+                // hasn't been shown yet
                 if !self.splash_screen_shown && self.peer_list.lock().unwrap().is_empty() {
                     // Render splash screen with BITCOIN_LOGO_LARGE to fill the screen
                     let logo_area = f.size(); // Use the full screen for the splash screen
 
-                    let logo_lines: Vec<Line> = BITCOIN_LOGO_LARGE.iter().map(|line| Line::from(Span::raw(*line))).collect();
+                    let logo_lines: Vec<Line> = BITCOIN_LOGO_LARGE
+                        .iter()
+                        .map(|line| Line::from(Span::raw(*line)))
+                        .collect();
                     let logo_widget = Paragraph::new(logo_lines)
-                        .block(Block::default().borders(Borders::ALL).title("Bitcoin P2P Client").border_style(Style::default().fg(Color::Yellow))) // Neutral border style
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title("Bitcoin P2P Client")
+                                .border_style(Style::default().fg(Color::Yellow)),
+                        ) // Neutral border style
                         .style(Style::default().fg(Color::Yellow)); // Neutral text style
 
                     // Render the logo widget to fill the entire area
@@ -182,48 +207,83 @@ impl App {
 
                     // Set splash_screen_shown to true after rendering it once
                     self.splash_screen_shown = true;
-
-                } else { // Existing UI rendering logic
+                } else {
+                    // Existing UI rendering logic
                     let size = f.size();
                     let chunks = Layout::default()
                         .direction(Direction::Vertical)
-                        .constraints([Constraint::Length(3), Constraint::Length(3), Constraint::Min(0)].as_ref())
+                        .constraints(
+                            [
+                                Constraint::Length(3),
+                                Constraint::Length(3),
+                                Constraint::Min(0),
+                            ]
+                            .as_ref(),
+                        )
                         .split(size);
 
                     let block_height_value = *self.block_height.lock().unwrap();
                     let block_hash_value = self.block_hash.lock().unwrap();
                     let block_height_widget = Paragraph::new("")
-                        .block(Block::default().borders(Borders::ALL).title(format!("Block Height: {} Hash: {}", block_height_value, block_hash_value)).border_style(match self.focused_widget {
-                            FocusedWidget::BlockHeight => Style::default().fg(Color::Magenta),
-                            _ => Style::default().fg(Color::White),
-                        }))
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title(format!(
+                                    "Block Height: {} Hash: {}",
+                                    block_height_value, block_hash_value
+                                ))
+                                .border_style(match self.focused_widget {
+                                    FocusedWidget::BlockHeight => {
+                                        Style::default().fg(Color::Magenta)
+                                    }
+                                    _ => Style::default().fg(Color::White),
+                                }),
+                        )
                         .style(Style::default().fg(Color::Cyan));
                     f.render_widget(block_height_widget, chunks[0]);
 
                     let instruction_chunks = Layout::default()
                         .direction(Direction::Horizontal)
-                        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                        .constraints(
+                            [Constraint::Percentage(50), Constraint::Percentage(50)].as_ref(),
+                        )
                         .split(chunks[1]);
 
                     let instruction_quit = Paragraph::new("Press 'q' to quit.")
-                        .block(Block::default().borders(Borders::ALL).title("Instructions").border_style(match self.focused_widget {
-                            FocusedWidget::Instructions => Style::default().fg(Color::Magenta),
-                            _ => Style::default().fg(Color::Yellow),
-                        }))
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title("Instructions")
+                                .border_style(match self.focused_widget {
+                                    FocusedWidget::Instructions => {
+                                        Style::default().fg(Color::Magenta)
+                                    }
+                                    _ => Style::default().fg(Color::Yellow),
+                                }),
+                        )
                         .style(Style::default().fg(Color::Yellow));
                     f.render_widget(instruction_quit, instruction_chunks[0]);
 
                     let instruction_scroll_up = Paragraph::new("Press 'Up' to scroll up.")
-                        .block(Block::default().borders(Borders::ALL).title("").border_style(match self.focused_widget {
-                            FocusedWidget::Instructions => Style::default().fg(Color::Magenta),
-                            _ => Style::default().fg(Color::Yellow),
-                        }))
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title("")
+                                .border_style(match self.focused_widget {
+                                    FocusedWidget::Instructions => {
+                                        Style::default().fg(Color::Magenta)
+                                    }
+                                    _ => Style::default().fg(Color::Yellow),
+                                }),
+                        )
                         .style(Style::default().fg(Color::Yellow));
                     f.render_widget(instruction_scroll_up, instruction_chunks[1]);
 
                     let bottom_half_chunks = Layout::default()
                         .direction(Direction::Horizontal)
-                        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                        .constraints(
+                            [Constraint::Percentage(50), Constraint::Percentage(50)].as_ref(),
+                        )
                         .split(chunks[2]);
 
                     if self.log_visible {
@@ -242,7 +302,11 @@ impl App {
                             .map(|(msg, timestamp)| {
                                 let offset_datetime: OffsetDateTime = timestamp.clone().into();
                                 let format = format_description!("[hour]:[minute]:[second]");
-                                Line::from(Span::raw(format!("[{}] {}", offset_datetime.format(&format).unwrap_or_default(), msg)))
+                                Line::from(Span::raw(format!(
+                                    "[{}] {}",
+                                    offset_datetime.format(&format).unwrap_or_default(),
+                                    msg
+                                )))
                             })
                             .collect();
 
@@ -251,7 +315,11 @@ impl App {
                             _ => Style::default().fg(Color::White),
                         };
                         let log_block = Block::default()
-                            .borders(if self.peer_list_width_percentage == 0 { Borders::NONE } else { Borders::ALL })
+                            .borders(if self.peer_list_width_percentage == 0 {
+                                Borders::NONE
+                            } else {
+                                Borders::ALL
+                            })
                             .title("Bitcoin P2P Client Log")
                             .border_style(border_style);
 
@@ -262,12 +330,25 @@ impl App {
                             .scroll((self.current_scroll_y.round() as u16, 0));
 
                         f.render_widget(paragraph, bottom_half_chunks[0]);
-                    } else { // Log is hidden, display Bitcoin logo full-width
+                    } else {
+                        // Log is hidden, display Bitcoin logo full-width
                         let logo_area = bottom_half_chunks[0]; // Use the area for the log panel, which is now full-width
 
-                        let logo_lines: Vec<Line> = BITCOIN_LOGO.iter().map(|line| Line::from(Span::raw(*line))).collect();
+                        let logo_lines: Vec<Line> = BITCOIN_LOGO
+                            .iter()
+                            .map(|line| Line::from(Span::raw(*line)))
+                            .collect();
                         let logo_widget = Paragraph::new(logo_lines)
-                            .block(Block::default().borders(if self.peer_list_width_percentage == 0 { Borders::NONE } else { Borders::ALL }).title("Bitcoin Logo").border_style(Style::default().fg(Color::Yellow))) // Neutral border style
+                            .block(
+                                Block::default()
+                                    .borders(if self.peer_list_width_percentage == 0 {
+                                        Borders::NONE
+                                    } else {
+                                        Borders::ALL
+                                    })
+                                    .title("Bitcoin Logo")
+                                    .border_style(Style::default().fg(Color::Yellow)),
+                            ) // Neutral border style
                             .style(Style::default().fg(Color::Yellow)); // Neutral text style
 
                         // Render the logo widget to fill the available horizontal space
@@ -281,37 +362,60 @@ impl App {
                             // If the list is empty, show a "Connecting..." message
                             let connecting_message = vec![Line::from("Connecting to peers...")];
                             let connecting_widget = Paragraph::new(connecting_message)
-                                .block(Block::default().borders(Borders::ALL).title("Peers").border_style(match self.focused_widget {
-                                    FocusedWidget::PeerList => Style::default().fg(Color::Magenta),
-                                    _ => Style::default().fg(Color::Yellow),
-                                }))
+                                .block(
+                                    Block::default()
+                                        .borders(Borders::ALL)
+                                        .title("Peers")
+                                        .border_style(match self.focused_widget {
+                                            FocusedWidget::PeerList => {
+                                                Style::default().fg(Color::Magenta)
+                                            }
+                                            _ => Style::default().fg(Color::Yellow),
+                                        }),
+                                )
                                 .style(Style::default().fg(Color::Yellow));
                             f.render_widget(connecting_widget, bottom_half_chunks[1]); // Assuming bottom_half_chunks[1] is correct for the peer list pane
                         } else {
                             // If the list is not empty, render the actual peer list
-                            let mut sorted_peers: Vec<(&String, &(u64, u64, SystemTime))> = peer_list_lock.iter().collect();
+                            let mut sorted_peers: Vec<(&String, &(u64, u64, SystemTime))> =
+                                peer_list_lock.iter().collect();
                             sorted_peers.sort_by(|a, b| {
                                 // Sort by inbound traffic (descending)
-                                b.1.0.cmp(&a.1.0)
+                                b.1.0
+                                    .cmp(&a.1.0)
                                     // Then by connection time (ascending)
                                     .then_with(|| a.1.2.cmp(&b.1.2))
                             });
 
-                            let peer_list_content: Vec<Line> = sorted_peers.into_iter()
-                                .map(|(peer_addr, bytes_transferred)| Line::from(Span::raw(format!("{} In: {} B, Out: {} B", peer_addr, bytes_transferred.0, bytes_transferred.1))))
+                            let peer_list_content: Vec<Line> = sorted_peers
+                                .into_iter()
+                                .map(|(peer_addr, bytes_transferred)| {
+                                    Line::from(Span::raw(format!(
+                                        "{} In: {} B, Out: {} B",
+                                        peer_addr, bytes_transferred.0, bytes_transferred.1
+                                    )))
+                                })
                                 .collect();
 
                             let peer_list_widget = Paragraph::new(peer_list_content)
-                                .block(Block::default().borders(Borders::ALL).title("Peers").border_style(match self.focused_widget {
-                                    FocusedWidget::PeerList => Style::default().fg(Color::Magenta),
-                                    _ => Style::default().fg(Color::Yellow),
-                                }))
+                                .block(
+                                    Block::default()
+                                        .borders(Borders::ALL)
+                                        .title("Peers")
+                                        .border_style(match self.focused_widget {
+                                            FocusedWidget::PeerList => {
+                                                Style::default().fg(Color::Magenta)
+                                            }
+                                            _ => Style::default().fg(Color::Yellow),
+                                        }),
+                                )
                                 .style(Style::default().fg(Color::Yellow));
                             f.render_widget(peer_list_widget, bottom_half_chunks[1]); // Assuming bottom_half_chunks[1] is correct for the peer list pane
                         }
                     } else {
-                    // GEMINI we want to stretch the log widget
-                    // to fill horizontally when self.peer_list_width_percentage = 0
+                        // GEMINI we want to stretch the log widget
+                        // to fill horizontally when
+                        // self.peer_list_width_percentage = 0
                     }
                 }
             })?;
@@ -322,7 +426,7 @@ impl App {
                     match event.code {
                         KeyCode::Char('q') => {
                             self.running.store(false, Ordering::SeqCst);
-                        },
+                        }
                         KeyCode::Tab => {
                             self.focused_widget = match self.focused_widget {
                                 FocusedWidget::BlockHeight => FocusedWidget::Instructions,
@@ -330,7 +434,7 @@ impl App {
                                 FocusedWidget::Log => FocusedWidget::PeerList,
                                 FocusedWidget::PeerList => FocusedWidget::BlockHeight,
                             };
-                        },
+                        }
                         KeyCode::Down => {
                             if let FocusedWidget::Log = self.focused_widget {
                                 self.scroll_state = self.scroll_state.saturating_add(1);
@@ -348,13 +452,13 @@ impl App {
                                     self.auto_scroll_enabled = false;
                                 }
                             }
-                        },
+                        }
                         KeyCode::Up => {
                             if let FocusedWidget::Log = self.focused_widget {
                                 self.scroll_state = self.scroll_state.saturating_sub(1);
                                 self.auto_scroll_enabled = false; // User manually scrolled
                             }
-                        },
+                        }
                         KeyCode::Left => {
                             self.focused_widget = match self.focused_widget {
                                 FocusedWidget::Instructions => FocusedWidget::BlockHeight,
@@ -362,7 +466,7 @@ impl App {
                                 FocusedWidget::Log => FocusedWidget::Instructions,
                                 _ => self.focused_widget,
                             };
-                        },
+                        }
                         KeyCode::Right => {
                             self.focused_widget = match self.focused_widget {
                                 FocusedWidget::BlockHeight => FocusedWidget::Instructions,
@@ -370,25 +474,34 @@ impl App {
                                 FocusedWidget::Log => FocusedWidget::PeerList,
                                 _ => self.focused_widget,
                             };
-                        },
+                        }
                         KeyCode::Esc => {
-                            if self.focused_widget == FocusedWidget::Log && !self.auto_scroll_enabled {
+                            if self.focused_widget == FocusedWidget::Log
+                                && !self.auto_scroll_enabled
+                            {
                                 self.auto_scroll_enabled = true;
                                 self.last_user_input_time = Instant::now(); // Reset timer to allow auto-scroll after delay
                             }
-                        },
+                        }
                         KeyCode::Char('p') => {
-                            self.peer_list_width_percentage = if self.peer_list_width_percentage == 50 { 0 } else { 50 };
-                            if self.peer_list_width_percentage == 0 && self.focused_widget == FocusedWidget::PeerList {
+                            self.peer_list_width_percentage =
+                                if self.peer_list_width_percentage == 50 {
+                                    0
+                                } else {
+                                    50
+                                };
+                            if self.peer_list_width_percentage == 0
+                                && self.focused_widget == FocusedWidget::PeerList
+                            {
                                 self.focused_widget = FocusedWidget::Log; // Move focus if peer list is hidden
                             }
-                        },
+                        }
                         KeyCode::Char('l') => {
                             self.log_visible = !self.log_visible;
                             if !self.log_visible && self.focused_widget == FocusedWidget::Log {
                                 self.focused_widget = FocusedWidget::BlockHeight;
                             }
-                        },
+                        }
                         KeyCode::Enter => {
                             if let FocusedWidget::Log = self.focused_widget {
                                 let messages_count = self.messages.lock().unwrap().len();
@@ -405,10 +518,10 @@ impl App {
                                 }
                                 self.auto_scroll_enabled = true;
                             }
-                        },
-                        _ => {{}},
+                        }
+                        _ => {}
                     }
-                },
+                }
                 Ok(Event::Tick) => {
                     // --- Scrolling Animation Logic ---
                     let messages_count = self.messages.lock().unwrap().len();
@@ -419,7 +532,8 @@ impl App {
                         0.0
                     };
 
-                    // Auto-scroll logic should apply if auto_scroll_enabled is true, regardless of focus
+                    // Auto-scroll logic should apply if auto_scroll_enabled is true, regardless of
+                    // focus
                     if self.auto_scroll_enabled {
                         // Auto-scroll towards the bottom
                         if self.current_scroll_y < bottom_scroll_target {
@@ -448,8 +562,8 @@ impl App {
                         }
                     }
                     // --- End Scrolling Logic ---
-                },
-                Err(mpsc::RecvTimeoutError::Timeout) => {{}},
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     self.running.store(false, Ordering::SeqCst);
                 }

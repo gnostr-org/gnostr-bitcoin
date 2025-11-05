@@ -1,14 +1,19 @@
 pub mod ui;
 
-use std::net::ToSocketAddrs;
-use std::io::{Read, Write};
-use std::net::TcpStream;
-use std::time::{SystemTime, UNIX_EPOCH, Duration};
+use std::{
+    fs::{self, File},
+    io::{Read, Write},
+    net::{TcpStream, ToSocketAddrs},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
+use log::{LevelFilter, debug, error, info, warn};
 use sha2::{Digest, Sha256};
-use log::{info, error, warn, debug, LevelFilter};
-use simplelog::{CombinedLogger, WriteLogger, Config};
-use std::fs::{self, File};
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
+use simplelog::{CombinedLogger, Config, WriteLogger};
 
 // --- Constants ---
 
@@ -43,24 +48,23 @@ pub const DNS_SEEDS: &[&str] = &[
 ];
 
 /// Initializes the logging system.
-/// Creates a log directory if it doesn't exist and sets up a logger that writes to a file.
+/// Creates a log directory if it doesn't exist and sets up a logger that writes
+/// to a file.
 pub fn init_logger() -> Result<()> {
-    let home_dir = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+    let home_dir =
+        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
     let gnostr_dir = home_dir.join(".gnostr");
     let bitcoin_dir = gnostr_dir.join("bitcoin");
     let log_file_path = bitcoin_dir.join("gnostr-bitcoin.log");
 
     fs::create_dir_all(&bitcoin_dir)?;
 
-    CombinedLogger::init(
-        vec![
-            WriteLogger::new(
-                LevelFilter::Info,
-                Config::default(),
-                File::create(log_file_path)?
-            ),
-        ]
-    ).map_err(anyhow::Error::from)
+    CombinedLogger::init(vec![WriteLogger::new(
+        LevelFilter::Info,
+        Config::default(),
+        File::create(log_file_path)?,
+    )])
+    .map_err(anyhow::Error::from)
 }
 
 // ----------------------------------------------------------------------
@@ -68,10 +72,12 @@ pub fn init_logger() -> Result<()> {
 // ----------------------------------------------------------------------
 
 /// Trait for reading Bitcoin's variable-length integer (VarInt) encoding.
-/// VarInts are used in Bitcoin protocols to represent lengths and counts efficiently.
+/// VarInts are used in Bitcoin protocols to represent lengths and counts
+/// efficiently.
 pub trait VarIntReader {
     /// Decodes a Bitcoin VarInt from a byte slice at a given offset.
-    /// Returns a tuple containing the decoded `u64` value and the number of bytes read.
+    /// Returns a tuple containing the decoded `u64` value and the number of
+    /// bytes read.
     fn read_varint_and_advance(&self, offset: usize) -> Result<(u64, usize)>;
 }
 
@@ -83,22 +89,30 @@ impl VarIntReader for [u8] {
     /// - 0xff: next 8 bytes are u64 (little-endian)
     /// Otherwise, the first byte is the value.
     fn read_varint_and_advance(&self, offset: usize) -> Result<(u64, usize)> {
-        if offset >= self.len() { return Err(anyhow::anyhow!("VarInt read failed: Offset out of bounds.")); }
+        if offset >= self.len() {
+            return Err(anyhow::anyhow!("VarInt read failed: Offset out of bounds."));
+        }
         let first_byte = self[offset];
         match first_byte {
             0x00..=0xfc => Ok((first_byte as u64, 1)),
             0xfd => {
-                if self.len() < offset + 3 { return Err(anyhow::anyhow!("Incomplete 2-byte varint.")); }
+                if self.len() < offset + 3 {
+                    return Err(anyhow::anyhow!("Incomplete 2-byte varint."));
+                }
                 let bytes: [u8; 2] = self[offset + 1..offset + 3].try_into().unwrap();
                 Ok((u16::from_le_bytes(bytes) as u64, 3))
             }
             0xfe => {
-                if self.len() < offset + 5 { return Err(anyhow::anyhow!("Incomplete 4-byte varint.")); }
+                if self.len() < offset + 5 {
+                    return Err(anyhow::anyhow!("Incomplete 4-byte varint."));
+                }
                 let bytes: [u8; 4] = self[offset + 1..offset + 5].try_into().unwrap();
                 Ok((u32::from_le_bytes(bytes) as u64, 5))
             }
             0xff => {
-                if self.len() < offset + 9 { return Err(anyhow::anyhow!("Incomplete 8-byte varint.")); }
+                if self.len() < offset + 9 {
+                    return Err(anyhow::anyhow!("Incomplete 8-byte varint."));
+                }
                 let bytes: [u8; 8] = self[offset + 1..offset + 9].try_into().unwrap();
                 Ok((u64::from_le_bytes(bytes), 9))
             }
@@ -107,9 +121,10 @@ impl VarIntReader for [u8] {
 }
 
 /// Establishes a TCP connection to a Bitcoin peer and performs the handshake.
-/// It tries to connect to the specified `target_peer_addr` or iterates through `dns_seeds`.
-/// The handshake involves sending a `version` message and expecting specific responses.
-/// Returns the connected `TcpStream`, the peer's address, and a list of discovered peer addresses.
+/// It tries to connect to the specified `target_peer_addr` or iterates through
+/// `dns_seeds`. The handshake involves sending a `version` message and
+/// expecting specific responses. Returns the connected `TcpStream`, the peer's
+/// address, and a list of discovered peer addresses.
 pub fn connect_and_handshake(
     dns_seeds: &[&str],
     default_port: u16,
@@ -129,21 +144,29 @@ pub fn connect_and_handshake(
 
     for addr_to_try in addresses_to_try.iter() {
         if !running.load(Ordering::SeqCst) {
-            return Err(anyhow::anyhow!("Shutdown signal received, aborting connection attempt."));
+            return Err(anyhow::anyhow!(
+                "Shutdown signal received, aborting connection attempt."
+            ));
         }
         info!("[FLOW] Trying to connect to {}", addr_to_try);
 
         let socket_addresses = match addr_to_try.to_socket_addrs() {
             Ok(addrs) => addrs,
             Err(e) => {
-                info!("[INFO] Failed to resolve address {}: {}. Trying next...", addr_to_try, e);
+                info!(
+                    "[INFO] Failed to resolve address {}: {}. Trying next...",
+                    addr_to_try, e
+                );
                 continue;
             }
         };
 
         let mut connected_stream: Option<TcpStream> = None;
         for socket_addr in socket_addresses {
-            info!("[FLOW] Attempting to connect to resolved address: {}", socket_addr);
+            info!(
+                "[FLOW] Attempting to connect to resolved address: {}",
+                socket_addr
+            );
             match TcpStream::connect_timeout(&socket_addr, Duration::from_secs(5)) {
                 Ok(s) => {
                     s.set_read_timeout(Some(std::time::Duration::from_secs(10)))?;
@@ -152,7 +175,10 @@ pub fn connect_and_handshake(
                     break; // Connected to one, no need to try others for this addr_to_try
                 }
                 Err(e) => {
-                    info!("[INFO] Failed to connect to {}: {}. Trying next resolved address...", socket_addr, e);
+                    info!(
+                        "[INFO] Failed to connect to {}: {}. Trying next resolved address...",
+                        socket_addr, e
+                    );
                     continue;
                 }
             }
@@ -161,20 +187,28 @@ pub fn connect_and_handshake(
         let mut stream = match connected_stream {
             Some(s) => s,
             None => {
-                info!("[INFO] Failed to connect to any resolved address for {}. Trying next seed...", addr_to_try);
+                info!(
+                    "[INFO] Failed to connect to any resolved address for {}. Trying next seed...",
+                    addr_to_try
+                );
                 continue;
             }
-        };                let peer_addr = stream.peer_addr()?.to_string();
-                let peer_addr_for_closure = peer_addr.clone();
-        
-                // Attempt handshake
-                let current_block_height = block_height.clone();
-                let _current_running_flag = running.clone();
-                let handshake_result = (move || -> Result<(TcpStream, String, Vec<String>)> {
-                    info!("[FLOW] Performing Handshake (sending 'version').");
+        };
+        let peer_addr = stream.peer_addr()?.to_string();
+        let peer_addr_for_closure = peer_addr.clone();
+
+        // Attempt handshake
+        let current_block_height = block_height.clone();
+        let _current_running_flag = running.clone();
+        let handshake_result = (move || -> Result<(TcpStream, String, Vec<String>)> {
+            info!("[FLOW] Performing Handshake (sending 'version').");
             let (version_message, _) = build_version_message()?;
-            info!("[SEND] 'version' message (total size: {})", version_message.len());
-            stream.write_all(&version_message)?;            info!("[FLOW] Waiting for peer's 'version' response.");
+            info!(
+                "[SEND] 'version' message (total size: {})",
+                version_message.len()
+            );
+            stream.write_all(&version_message)?;
+            info!("[FLOW] Waiting for peer's 'version' response.");
             let (header, payload) = match read_message(&mut stream) {
                 Ok(msg) => msg,
                 Err(e) => {
@@ -190,7 +224,10 @@ pub fn connect_and_handshake(
                 info!("[TRACE] Parsing 'version' payload (offset {}).", offset);
                 let (user_agent_len, bytes_read) = payload.read_varint_and_advance(offset)?;
                 offset += bytes_read + user_agent_len as usize;
-                info!("[TRACE] User Agent length: {} bytes. New offset: {}", user_agent_len, offset);
+                info!(
+                    "[TRACE] User Agent length: {} bytes. New offset: {}",
+                    user_agent_len, offset
+                );
 
                 let block_height_bytes: [u8; 4] = payload[offset..offset + 4].try_into().unwrap();
                 let current_height = i32::from_le_bytes(block_height_bytes);
@@ -204,9 +241,12 @@ pub fn connect_and_handshake(
 
             info!("[FLOW] Waiting for peer's 'verack' or 'addr' response.");
             match read_message(&mut stream) {
-                Ok(_) => {{}},
+                Ok(_) => {}
                 Err(e) => {
-                    error!("[ERROR] Failed to read peer\'s verack or addr message: {}", e);
+                    error!(
+                        "[ERROR] Failed to read peer\'s verack or addr message: {}",
+                        e
+                    );
                     return Err(e.into());
                 }
             };
@@ -234,11 +274,15 @@ pub fn connect_and_handshake(
                 let mut offset = 0;
                 let (count, bytes_read) = payload.read_varint_and_advance(offset)?;
                 offset += bytes_read;
-                info!("[TRACE] Number of addresses in 'addr' message: {}. New offset: {}", count, offset);
+                info!(
+                    "[TRACE] Number of addresses in 'addr' message: {}. New offset: {}",
+                    count, offset
+                );
 
                 for _ in 0..count {
-                    // Each address entry has a timestamp (4 bytes), services (8 bytes), IP address (16 bytes), and port (2 bytes).
-                    if payload.len() < offset + 30 { 
+                    // Each address entry has a timestamp (4 bytes), services (8 bytes), IP address
+                    // (16 bytes), and port (2 bytes).
+                    if payload.len() < offset + 30 {
                         warn!("[WARN] Incomplete address entry in 'addr' message.");
                         break;
                     }
@@ -246,7 +290,8 @@ pub fn connect_and_handshake(
                     offset += 4;
                     // Skip services (8 bytes)
                     offset += 8;
-                    // IPv6 address (16 bytes) - Bitcoin uses IPv6 format for addresses, with IPv4-mapped IPv6 addresses representing IPv4.
+                    // IPv6 address (16 bytes) - Bitcoin uses IPv6 format for addresses, with
+                    // IPv4-mapped IPv6 addresses representing IPv4.
                     let ip_bytes = &payload[offset..offset + 16];
                     offset += 16;
                     let port_bytes: [u8; 2] = payload[offset..offset + 2].try_into().unwrap();
@@ -254,7 +299,10 @@ pub fn connect_and_handshake(
 
                     let ip_addr = if ip_bytes[0..12] == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff] {
                         // IPv4-mapped IPv6 address: extract the IPv4 part.
-                        format!("{}.{}.{}.{}", ip_bytes[12], ip_bytes[13], ip_bytes[14], ip_bytes[15])
+                        format!(
+                            "{}.{}.{}.{}",
+                            ip_bytes[12], ip_bytes[13], ip_bytes[14], ip_bytes[15]
+                        )
                     } else {
                         // IPv6 address (simplified representation for now).
                         // For a full implementation, you'd parse the IPv6 bytes properly.
@@ -264,24 +312,36 @@ pub fn connect_and_handshake(
                     let peer_address = format!("{}:{}", ip_addr, port);
                     discovered_peers.push(peer_address);
                 }
-                info!("[INFO] Discovered {} peers from 'addr' message.", discovered_peers.len());
+                info!(
+                    "[INFO] Discovered {} peers from 'addr' message.",
+                    discovered_peers.len()
+                );
             }
             Ok((stream, peer_addr_for_closure, discovered_peers))
         })(); // Call the closure immediately
 
         match handshake_result {
             Err(e) => {
-                error!("[ERROR] Handshake failed with {}: {}. Trying next seeder...", peer_addr, e);
+                error!(
+                    "[ERROR] Handshake failed with {}: {}. Trying next seeder...",
+                    peer_addr, e
+                );
                 continue;
             }
             Ok((s, peer_addr, peers)) => {
-                info!("[INFO] Handshake successful with {}. Discovered {} peers.", peer_addr, peers.len());
+                info!(
+                    "[INFO] Handshake successful with {}. Discovered {} peers.",
+                    peer_addr,
+                    peers.len()
+                );
                 return Ok((s, peer_addr, peers));
             }
         }
     }
 
-    Err(anyhow::anyhow!("Failed to connect and handshake with any known Bitcoin seeders."))
+    Err(anyhow::anyhow!(
+        "Failed to connect and handshake with any known Bitcoin seeders."
+    ))
 }
 
 // ----------------------------------------------------------------------
@@ -299,57 +359,74 @@ pub fn read_message<R: Read>(stream: &mut R) -> Result<([u8; 24], Vec<u8>)> {
         Ok(_) => debug!("[TRACE] Read 24 bytes for header."),
         Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
             warn!("[WARN] Connection closed prematurely by peer during header read.");
-            return Err(anyhow::anyhow!("Connection closed prematurely during header read."));
+            return Err(anyhow::anyhow!(
+                "Connection closed prematurely during header read."
+            ));
         }
         Err(e) => return Err(e.into()),
     }
-    
+
     // Parse payload length from the header (bytes 16-19, little-endian).
     let payload_len = u32::from_le_bytes(header_bytes[16..20].try_into().unwrap());
     // Extract command from the header (bytes 4-15), removing null padding.
     let command = std::str::from_utf8(&header_bytes[4..16])?.trim_end_matches('\0');
-    info!("[TRACE] Header read. Command: '{}', Payload Length: {} bytes.", command, payload_len);
+    info!(
+        "[TRACE] Header read. Command: '{}', Payload Length: {} bytes.",
+        command, payload_len
+    );
 
     let mut payload = vec![0u8; payload_len as usize];
     if payload_len > 0 {
         match stream.read_exact(&mut payload) {
             Ok(_) => debug!("[TRACE] Read {} bytes for payload.", payload_len),
             Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                warn!("[WARN] Connection closed prematurely by peer during payload read. Expected {} bytes.", payload_len);
-                return Err(anyhow::anyhow!("Connection closed prematurely during payload read. Expected {} bytes.", payload_len));
+                warn!(
+                    "[WARN] Connection closed prematurely by peer during payload read. Expected {} bytes.",
+                    payload_len
+                );
+                return Err(anyhow::anyhow!(
+                    "Connection closed prematurely during payload read. Expected {} bytes.",
+                    payload_len
+                ));
             }
             Err(e) => return Err(e.into()),
         }
         // Validate the checksum.
         let expected_checksum: [u8; 4] = header_bytes[20..24].try_into().unwrap();
         let actual_checksum = calculate_checksum(&payload);
-        
+
         if expected_checksum != actual_checksum {
-            warn!("[WARN] Checksum mismatch! Expected: {:?}, Actual: {:?}", expected_checksum, actual_checksum);
+            warn!(
+                "[WARN] Checksum mismatch! Expected: {:?}, Actual: {:?}",
+                expected_checksum, actual_checksum
+            );
         }
     }
-    
+
     info!("[FUNC] read_message: Finished reading message.");
     Ok((header_bytes, payload))
 }
 
 /// Constructs a Bitcoin P2P `version` message.
 /// This message is sent when establishing a connection to a peer.
-/// It includes protocol version, services, timestamp, peer addresses, nonce, user agent, and start height.
+/// It includes protocol version, services, timestamp, peer addresses, nonce,
+/// user agent, and start height.
 pub fn build_version_message() -> Result<(Vec<u8>, usize)> {
     info!("[FUNC] build_version_message: Assembling payload.");
     let mut payload = Vec::new();
     let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs() as i64;
-    
+
     // Protocol version (little-endian).
     payload.write_all(&PROTOCOL_VERSION.to_le_bytes())?;
     // Services supported by the sender (little-endian).
     payload.write_all(&SERVICES.to_le_bytes())?;
     // Current timestamp (little-endian).
     payload.write_all(&now.to_le_bytes())?;
-    // Receiver's address (26 bytes: Services (8) + IPv6 Address (16) + Port (2)). Filled with zeros.
+    // Receiver's address (26 bytes: Services (8) + IPv6 Address (16) + Port (2)).
+    // Filled with zeros.
     payload.write_all(&[0u8; 26])?; // addr_recv
-    // Sender's network address (26 bytes). Filled with zeros as we don't specify it here.
+    // Sender's network address (26 bytes). Filled with zeros as we don't specify it
+    // here.
     payload.write_all(&[0u8; 26])?; // addr_from
     // Nonce to detect loops (8 bytes).
     payload.write_all(&0u64.to_le_bytes())?; // nonce
@@ -361,11 +438,12 @@ pub fn build_version_message() -> Result<(Vec<u8>, usize)> {
     payload.write_all(&0i32.to_le_bytes())?; // start_height
     // Whether relay options are enabled (1 byte boolean).
     payload.write_all(&[1])?; // relay
-    
+
     let payload_len = payload.len();
     let checksum = calculate_checksum(&payload);
-    
-    // Construct the full message: MAGIC bytes + Command (12 bytes) + Payload Length (4 bytes) + Checksum (4 bytes) + Payload.
+
+    // Construct the full message: MAGIC bytes + Command (12 bytes) + Payload Length
+    // (4 bytes) + Checksum (4 bytes) + Payload.
     let mut raw_message = Vec::new();
     raw_message.write_all(&MAGIC_BYTES)?;
     let mut command_bytes = [0u8; 12];
@@ -374,20 +452,24 @@ pub fn build_version_message() -> Result<(Vec<u8>, usize)> {
     raw_message.write_all(&(payload_len as u32).to_le_bytes())?;
     raw_message.write_all(&checksum)?;
     raw_message.write_all(&payload)?;
-    
-    info!("[FUNC] build_version_message: Done. Payload size: {}", payload_len);
+
+    info!(
+        "[FUNC] build_version_message: Done. Payload size: {}",
+        payload_len
+    );
     Ok((raw_message, payload_len))
 }
 
 /// Constructs a Bitcoin P2P `verack` message.
-/// This message is sent after receiving a `version` message and successfully negotiating the connection.
-/// It signifies that the peer has acknowledged the version information and is ready to proceed.
+/// This message is sent after receiving a `version` message and successfully
+/// negotiating the connection. It signifies that the peer has acknowledged the
+/// version information and is ready to proceed.
 pub fn build_verack_message() -> Result<Vec<u8>> {
     info!("[FUNC] build_verack_message: Assembling message (Zero payload).");
-    let payload = Vec::new(); 
+    let payload = Vec::new();
     let payload_len = 0;
     let checksum = calculate_checksum(&payload);
-    
+
     let mut raw_message = Vec::new();
     raw_message.write_all(&MAGIC_BYTES)?;
     let mut command_bytes = [0u8; 12];
@@ -395,19 +477,20 @@ pub fn build_verack_message() -> Result<Vec<u8>> {
     raw_message.write_all(&command_bytes)?;
     raw_message.write_all(&(payload_len as u32).to_le_bytes())?;
     raw_message.write_all(&checksum)?;
-    
+
     info!("[FUNC] build_verack_message: Done.");
     Ok(raw_message)
 }
 
 /// Constructs a Bitcoin P2P `mempool` message.
-/// This message requests information about all unconfirmed transactions in the mempool.
+/// This message requests information about all unconfirmed transactions in the
+/// mempool.
 pub fn build_mempool_message() -> Result<Vec<u8>> {
     info!("[FUNC] build_mempool_message: Assembling message (Zero payload).");
-    let payload = Vec::new(); 
+    let payload = Vec::new();
     let payload_len = 0;
     let checksum = calculate_checksum(&payload);
-    
+
     let mut raw_message = Vec::new();
     raw_message.write_all(&MAGIC_BYTES)?;
     let mut command_bytes = [0u8; 12];
@@ -415,7 +498,7 @@ pub fn build_mempool_message() -> Result<Vec<u8>> {
     raw_message.write_all(&command_bytes)?;
     raw_message.write_all(&(payload_len as u32).to_le_bytes())?;
     raw_message.write_all(&checksum)?;
-    
+
     info!("[FUNC] build_mempool_message: Done.");
     Ok(raw_message)
 }
@@ -429,7 +512,7 @@ pub fn build_ping_message(nonce: [u8; 8]) -> Result<Vec<u8>> {
     payload.write_all(&nonce)?;
     let payload_len = payload.len();
     let checksum = calculate_checksum(&payload);
-    
+
     let mut raw_message = Vec::new();
     raw_message.write_all(&MAGIC_BYTES)?;
     let mut command_bytes = [0u8; 12];
@@ -438,7 +521,7 @@ pub fn build_ping_message(nonce: [u8; 8]) -> Result<Vec<u8>> {
     raw_message.write_all(&(payload_len as u32).to_le_bytes())?;
     raw_message.write_all(&checksum)?;
     raw_message.write_all(&payload)?;
-    
+
     info!("[FUNC] build_ping_message: Done.");
     Ok(raw_message)
 }
@@ -451,7 +534,7 @@ pub fn build_pong_message(nonce: [u8; 8]) -> Result<Vec<u8>> {
     payload.write_all(&nonce)?;
     let payload_len = payload.len();
     let checksum = calculate_checksum(&payload);
-    
+
     let mut raw_message = Vec::new();
     raw_message.write_all(&MAGIC_BYTES)?;
     let mut command_bytes = [0u8; 12];
@@ -460,7 +543,7 @@ pub fn build_pong_message(nonce: [u8; 8]) -> Result<Vec<u8>> {
     raw_message.write_all(&(payload_len as u32).to_le_bytes())?;
     raw_message.write_all(&checksum)?;
     raw_message.write_all(&payload)?;
-    
+
     info!("[FUNC] build_pong_message: Done.");
     Ok(raw_message)
 }
@@ -486,7 +569,8 @@ pub fn build_getaddr_message() -> Result<Vec<u8>> {
 }
 
 /// Helper function for encoding a `u64` value into Bitcoin's VarInt format.
-/// VarInt is used to encode integers of variable length, saving space for smaller numbers.
+/// VarInt is used to encode integers of variable length, saving space for
+/// smaller numbers.
 fn encode_varint(value: u64) -> Vec<u8> {
     let mut bytes = Vec::new();
     if value <= 0xfc {
@@ -505,9 +589,12 @@ fn encode_varint(value: u64) -> Vec<u8> {
 }
 
 /// Constructs a Bitcoin P2P `getheaders` message.
-/// This message is used to request block headers from a specific block hash up to a stop hash.
-/// It requires a list of block locator hashes and a stop hash.
-pub fn build_getheaders_message(locator_hashes: Vec<[u8; 32]>, stop_hash: [u8; 32]) -> Result<Vec<u8>> {
+/// This message is used to request block headers from a specific block hash up
+/// to a stop hash. It requires a list of block locator hashes and a stop hash.
+pub fn build_getheaders_message(
+    locator_hashes: Vec<[u8; 32]>,
+    stop_hash: [u8; 32],
+) -> Result<Vec<u8>> {
     info!("[FUNC] build_getheaders_message: Assembling message.");
     let mut payload = Vec::new();
 
@@ -521,7 +608,8 @@ pub fn build_getheaders_message(locator_hashes: Vec<[u8; 32]>, stop_hash: [u8; 3
         payload.write_all(&hash)?;
     }
 
-    // Hash stop: specifies the hash of the block that should be the last one returned.
+    // Hash stop: specifies the hash of the block that should be the last one
+    // returned.
     payload.write_all(&stop_hash)?;
 
     let payload_len = payload.len();
@@ -537,13 +625,18 @@ pub fn build_getheaders_message(locator_hashes: Vec<[u8; 32]>, stop_hash: [u8; 3
     raw_message.write_all(&checksum)?;
     raw_message.write_all(&payload)?;
 
-    info!("[FUNC] build_getheaders_message: Done. Payload size: {}", payload_len);
+    info!(
+        "[FUNC] build_getheaders_message: Done. Payload size: {}",
+        payload_len
+    );
     Ok(raw_message)
 }
 
-
 fn calculate_checksum(payload: &[u8]) -> [u8; 4] {
-    debug!("[FUNC] calculate_checksum: Hashing {} bytes.", payload.len());
+    debug!(
+        "[FUNC] calculate_checksum: Hashing {} bytes.",
+        payload.len()
+    );
     let hash1 = Sha256::digest(payload);
     let hash2 = Sha256::digest(hash1);
     let mut checksum = [0u8; 4];
@@ -557,49 +650,50 @@ fn calculate_checksum(payload: &[u8]) -> [u8; 4] {
 
 #[cfg(test)]
 mod tests {
+    use std::{io::Cursor, str};
+
     use super::*;
-    use std::io::Cursor;
-    use std::str;
 
     /// Helper function to simulate and test the handshake process.
     /// It reads mock `version` and `verack` messages from a stream
     /// and verifies the extracted block height.
     fn perform_test_handshake<S: Read>(mut stream: S) -> Result<i32> {
-        // 1. Client reads peer's 'version' message 
+        // 1. Client reads peer's 'version' message
         let (header, payload) = read_message(&mut stream)?;
         let command = std::str::from_utf8(&header[4..16])?.trim_end_matches('\0');
-        
-        if command != "version" { 
-            return Err(anyhow::anyhow!("Expected 'version', got '{}'.", command)); 
+
+        if command != "version" {
+            return Err(anyhow::anyhow!("Expected 'version', got '{}'.", command));
         }
 
         // Extract height (core test value)
         let mut offset: usize = 80; // Offset to the block height field in the version payload
         let (_user_agent_len, bytes_read) = payload.read_varint_and_advance(offset)?;
-        offset += bytes_read + _user_agent_len as usize; 
+        offset += bytes_read + _user_agent_len as usize;
         let block_height_bytes: [u8; 4] = payload[offset..offset + 4].try_into().unwrap();
         let height = i32::from_le_bytes(block_height_bytes);
         debug!("[DEBUG] Final extracted height: {}", height);
-        
+
         // 2. Client reads peer's 'verack' message
         let (header, _) = read_message(&mut stream)?;
         let command = std::str::from_utf8(&header[4..16])?.trim_end_matches('\0');
-        if command != "verack" { 
-            return Err(anyhow::anyhow!("Expected 'verack', got '{}'.", command)); 
+        if command != "verack" {
+            return Err(anyhow::anyhow!("Expected 'verack', got '{}'.", command));
         }
-        
+
         Ok(i32::from_le_bytes(block_height_bytes))
     }
-    
+
     // --- Mock Data ---
     /// Mock block height in little-endian format (e.g., 810000).
     const MOCK_HEIGHT_LE: [u8; 4] = [0x60, 0x5c, 0x0c, 0x00]; // 810000
     /// Mock user agent string for testing.
-    const MOCK_USER_AGENT: &[u8] = b"/mock-test-client/"; 
+    const MOCK_USER_AGENT: &[u8] = b"/mock-test-client/";
     /// Mock relay flag (0 for false).
-    const MOCK_RELAY: [u8; 1] = [0x00]; 
+    const MOCK_RELAY: [u8; 1] = [0x00];
 
-    /// Creates a prefix for the mock `version` payload, containing fields before the user agent and block height.
+    /// Creates a prefix for the mock `version` payload, containing fields
+    /// before the user agent and block height.
     fn create_mock_version_payload_prefix() -> Vec<u8> {
         let mut payload_prefix = Vec::new();
         let now: i64 = 0; // Mock timestamp for consistency
@@ -622,11 +716,15 @@ mod tests {
         msg.extend_from_slice(&cmd);
         msg.extend_from_slice(&(payload.len() as u32).to_le_bytes());
         msg.extend_from_slice(&calculate_checksum(&payload));
-        debug!("[DEBUG] create_mock_verack_response: message length = {}", msg.len());
+        debug!(
+            "[DEBUG] create_mock_verack_response: message length = {}",
+            msg.len()
+        );
         msg
     }
 
-    /// Creates a mock `version` response message, including mock data for user agent and block height.
+    /// Creates a mock `version` response message, including mock data for user
+    /// agent and block height.
     fn create_mock_version_response() -> Vec<u8> {
         let mut payload = create_mock_version_payload_prefix();
         // User agent length and string.
@@ -635,29 +733,36 @@ mod tests {
         // Block height and relay flag.
         payload.extend_from_slice(&MOCK_HEIGHT_LE);
         payload.extend_from_slice(&MOCK_RELAY);
-        
+
         let mut msg = Vec::new();
         msg.extend_from_slice(&MAGIC_BYTES);
         let mut cmd = [0u8; 12];
         cmd[0..7].copy_from_slice(b"version");
         msg.extend_from_slice(&cmd);
-        msg.extend_from_slice(&(payload.len() as u32).to_le_bytes()); 
-        msg.extend_from_slice(&calculate_checksum(&payload)); 
+        msg.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        msg.extend_from_slice(&calculate_checksum(&payload));
         msg.extend_from_slice(&payload);
-        debug!("[DEBUG] create_mock_version_response: message length = {}", msg.len());
+        debug!(
+            "[DEBUG] create_mock_version_response: message length = {}",
+            msg.len()
+        );
         msg
     }
 
     #[test]
     fn test_mock_seeder_handshake_and_height_check() -> Result<()> {
-        // Tests the simulated handshake process by creating mock version and verack messages.
+        // Tests the simulated handshake process by creating mock version and verack
+        // messages.
         let mock_version = create_mock_version_response();
         let mock_verack = create_mock_verack_response();
-        
+
         let mut mock_response = Vec::new();
         mock_response.extend_from_slice(&mock_version);
         mock_response.extend_from_slice(&mock_verack);
-        debug!("[DEBUG] test_mock_seeder_handshake_and_height_check: mock_response total length = {}", mock_response.len());
+        debug!(
+            "[DEBUG] test_mock_seeder_handshake_and_height_check: mock_response total length = {}",
+            mock_response.len()
+        );
 
         let mock_stream = Cursor::new(mock_response);
 
@@ -684,7 +789,10 @@ mod tests {
         // Check command name is correct.
         assert_eq!(str::from_utf8(&mempool_msg[4..11])?, "mempool");
         // Check payload length (should be 0).
-        assert_eq!(u32::from_le_bytes(mempool_msg[16..20].try_into().unwrap()), 0);
+        assert_eq!(
+            u32::from_le_bytes(mempool_msg[16..20].try_into().unwrap()),
+            0
+        );
         // Check total message length (24 bytes for header).
         assert_eq!(mempool_msg.len(), 24);
         Ok(())
