@@ -111,6 +111,7 @@ pub struct App {
     scroll_animation_speed: f32, // Controls animation speed
     log_widget_height: u16,
     pub log_visible: bool,
+    peer_list_width_percentage: u16,
 }
 
 impl App {
@@ -129,6 +130,7 @@ impl App {
             scroll_animation_speed: 0.1, // Initialize animation speed
             log_widget_height: 0,
             log_visible: true,
+            peer_list_width_percentage: 50,
         }
     }
 
@@ -198,9 +200,12 @@ impl App {
                     .style(Style::default().fg(Color::Yellow));
                 f.render_widget(instruction_scroll_up, instruction_chunks[1]);
 
+                let peer_list_constraint = Constraint::Percentage(self.peer_list_width_percentage);
+                let log_constraint = Constraint::Percentage(100 - self.peer_list_width_percentage);
+
                 let bottom_half_chunks = Layout::default()
                     .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
+                    .constraints([log_constraint, peer_list_constraint].as_ref())
                     .split(chunks[2]);
 
                 if self.log_visible {
@@ -349,6 +354,12 @@ impl App {
                             if self.focused_widget == FocusedWidget::Log && !self.auto_scroll_enabled {
                                 self.auto_scroll_enabled = true;
                                 self.last_user_input_time = Instant::now(); // Reset timer to allow auto-scroll after delay
+                            }
+                        },
+                        KeyCode::Char('p') => {
+                            self.peer_list_width_percentage = if self.peer_list_width_percentage == 50 { 0 } else { 50 };
+                            if self.peer_list_width_percentage == 0 && self.focused_widget == FocusedWidget::PeerList {
+                                self.focused_widget = FocusedWidget::Log; // Move focus if peer list is hidden
                             }
                         },
                         KeyCode::Char('l') => {
