@@ -43,11 +43,11 @@ const BITCOIN_LOGO: [&str; 15] = [
     "⠀⠀⠀⠀⠀⠀⠀⠀⠉⠛⠻⠿⢿⣿⣿⣿⣿⡿⠿⠟⠛⠉⠀⠀⠀⠀⠀⠀⠀⠀",
 ];
 
-const LOGO_HEIGHT: u16 = 15;
-const LOGO_WIDTH: u16 = 80;
+const _LOGO_HEIGHT: u16 = 15;
+const _LOGO_WIDTH: u16 = 80;
 
 #[rustfmt::skip]
-const BITCOIN_ICON: [&str; 9] = [
+const _BITCOIN_ICON: [&str; 9] = [
    "⠀⠀⠀⠀⣿⡇⠀⢸⣿⡇⠀⠀⠀⠀",
    "⠸⠿⣿⣿⣿⡿⠿⠿⣿⣿⣿⣶⣄⠀",
    "⠀⠀⢸⣿⣿⡇⠀⠀⠀⠈⣿⣿⣿⠀",
@@ -92,7 +92,7 @@ const BITCOIN_LOGO_LARGE: [&str; 30] = [
     "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠙⠻⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠟⠋⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
     "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠙⠛⠻⠿⠿⢿⣿⣿⣿⣿⣿⣿⡿⠿⠿⠟⠛⠋⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
 ];
-const LOGO_LARGE_HEIGHT: u16 = 30;
+const _LOGO_LARGE_HEIGHT: u16 = 30;
 
 pub enum Event<I> {
     Input(I),
@@ -168,11 +168,10 @@ impl App {
                     .checked_sub(last_tick.elapsed())
                     .unwrap_or_else(|| Duration::from_secs(0));
 
-                if event::poll(timeout).expect("poll works") {
-                    if let CEvent::Key(key) = event::read().expect("can read events") {
+                if event::poll(timeout).expect("poll works")
+                    && let CEvent::Key(key) = event::read().expect("can read events") {
                         tx.send(Event::Input(key)).expect("can send events");
                     }
-                }
 
                 if last_tick.elapsed() >= tick_rate {
                     tx.send(Event::Tick).expect("can send tick event");
@@ -300,7 +299,7 @@ impl App {
                         let formatted_messages: Vec<Line> = messages
                             .iter()
                             .map(|(msg, timestamp)| {
-                                let offset_datetime: OffsetDateTime = timestamp.clone().into();
+                                let offset_datetime: OffsetDateTime = (*timestamp).into();
                                 let format = format_description!("[hour]:[minute]:[second]");
                                 Line::from(Span::raw(format!(
                                     "[{}] {}",
@@ -440,11 +439,7 @@ impl App {
                                 self.scroll_state = self.scroll_state.saturating_add(1);
                                 let messages_count = self.messages.lock().unwrap().len();
                                 let visible_lines = self.log_widget_height.saturating_sub(2);
-                                let max_scroll = if (messages_count as u16) > visible_lines {
-                                    messages_count as u16 - visible_lines
-                                } else {
-                                    0
-                                };
+                                let max_scroll = (messages_count as u16).saturating_sub(visible_lines);
                                 if self.scroll_state >= max_scroll {
                                     self.scroll_state = max_scroll;
                                     self.auto_scroll_enabled = true;
@@ -507,11 +502,7 @@ impl App {
                                 let messages_count = self.messages.lock().unwrap().len();
                                 if messages_count > 0 {
                                     let visible_lines = self.log_widget_height.saturating_sub(2);
-                                    let max_scroll = if (messages_count as u16) > visible_lines {
-                                        messages_count as u16 - visible_lines
-                                    } else {
-                                        0
-                                    };
+                                    let max_scroll = (messages_count as u16).saturating_sub(visible_lines);
                                     self.scroll_state = max_scroll;
                                 } else {
                                     self.scroll_state = 0;

@@ -87,7 +87,7 @@ impl VarIntReader for [u8] {
     /// - 0xfd: next 2 bytes are u16 (little-endian)
     /// - 0xfe: next 4 bytes are u32 (little-endian)
     /// - 0xff: next 8 bytes are u64 (little-endian)
-    /// Otherwise, the first byte is the value.
+    ///   Otherwise, the first byte is the value.
     fn read_varint_and_advance(&self, offset: usize) -> Result<(u64, usize)> {
         if offset >= self.len() {
             return Err(anyhow::anyhow!("VarInt read failed: Offset out of bounds."));
@@ -213,7 +213,7 @@ pub fn connect_and_handshake(
                 Ok(msg) => msg,
                 Err(e) => {
                     error!("[ERROR] Failed to read peer\'s version message: {}", e);
-                    return Err(e.into());
+                    return Err(e);
                 }
             };
             let command = std::str::from_utf8(&header[4..16])?.trim_end_matches('\0');
@@ -247,7 +247,7 @@ pub fn connect_and_handshake(
                         "[ERROR] Failed to read peer\'s verack or addr message: {}",
                         e
                     );
-                    return Err(e.into());
+                    return Err(e);
                 }
             };
 
@@ -261,7 +261,7 @@ pub fn connect_and_handshake(
                 Ok(msg) => msg,
                 Err(e) => {
                     error!("[ERROR] Failed to read peer\'s addr message: {}", e);
-                    return Err(e.into());
+                    return Err(e);
                 }
             };
             let command = std::str::from_utf8(&header[4..16])?.trim_end_matches('\0');
@@ -583,7 +583,7 @@ fn encode_varint(value: u64) -> Vec<u8> {
         bytes.extend_from_slice(&(value as u32).to_le_bytes());
     } else {
         bytes.push(0xff);
-        bytes.extend_from_slice(&(value as u64).to_le_bytes());
+        bytes.extend_from_slice(&value.to_le_bytes());
     }
     bytes
 }

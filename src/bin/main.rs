@@ -11,7 +11,6 @@ use std::{
 };
 
 use anyhow::Result;
-use ctrlc;
 /// Initializes the logger for the application.
 /// Sets up logging to file and console output.
 use gnostr_bitcoin::ui::{App, init_tui, restore_tui};
@@ -205,9 +204,7 @@ fn main() -> Result<()> {
         if !discovered_peers_queue_lock.contains(&peer) {
             discovered_peers_queue_lock.push(peer.clone());
         }
-        if !known_peers_lock.contains_key(&peer) {
-            known_peers_lock.insert(peer, (0, 0)); // Initialize new peers with zero traffic.
-        }
+        known_peers_lock.entry(peer).or_insert((0, 0));
     }
     log::info!(
         "Total peers in discovery queue after initial DNS scan: {}.",
@@ -603,8 +600,8 @@ fn main() -> Result<()> {
                             }
                             Err(e) => {
                                 // Handle specific IO errors, like timeouts.
-                                if let Some(io_error) = e.downcast_ref::<std::io::Error>() {
-                                    if io_error.kind() == std::io::ErrorKind::TimedOut {
+                                if let Some(io_error) = e.downcast_ref::<std::io::Error>()
+                                    && io_error.kind() == std::io::ErrorKind::TimedOut {
                                         // If read times out, send a 'ping' message to keep the
                                         // connection alive.
                                         add_message_for_peer("[INFO] Read timeout. No data received for 60 seconds. Sending ping...".to_string());
@@ -637,7 +634,6 @@ fn main() -> Result<()> {
                                         }
                                         continue; // Continue the loop to wait for a response (pong).
                                     }
-                                }
                                 // For any other read errors, log the error and break.
                                 add_message_for_peer(format!(
                                     "[ERROR] Failed to read message: {}",
