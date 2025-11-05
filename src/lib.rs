@@ -1,6 +1,7 @@
 pub mod ui;
 pub mod p2p;
 pub mod tor;
+pub mod send_raw_tx;
 
 // Re-exporting items from submodules to make them accessible at the crate root.
 // This allows users to import them like `gnostr_bitcoin::p2p::connect_and_handshake`.
@@ -93,6 +94,8 @@ pub fn init_logger() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
+    use crate::p2p::encode_varint;
 
     // Mock Data for P2P tests (moved from original lib.rs)
     const MOCK_HEIGHT_LE: [u8; 4] = [0x60, 0x5c, 0x0c, 0x00]; // 810000

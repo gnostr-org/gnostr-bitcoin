@@ -10,6 +10,12 @@ use tokio::{net::lookup_host, sync::Semaphore, task::JoinSet, time::timeout, io:
 
 use tracing::{error, info};
 
-use gnostr_bitcoin::{p2p::{self, NetworkAddress}, tor};
+use gnostr_bitcoin::{p2p::{self}, tor};
 
 const MAX_CONCURRENT_DELIVERIES: usize = 100;
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    println!("send-raw-tx binary is running.");
+    Ok(())
+}

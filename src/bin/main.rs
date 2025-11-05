@@ -17,7 +17,7 @@ use clap::Parser;
 use gnostr_bitcoin::ui::{App, init_tui, restore_tui};
 use gnostr_bitcoin::{
     DEFAULT_PORT, DNS_SEEDS, build_mempool_message, build_ping_message, build_pong_message,
-    connect_and_handshake, init_logger, read_message,
+    connect_and_handshake, init_logger, read_message, send_raw_tx,
 };
 use serde::{Deserialize, Serialize};
 
@@ -36,6 +36,14 @@ struct Cli {
     /// Optional: Maximum number of concurrent peer connections to maintain
     #[arg(short, long, default_value_t = MAX_PEERS)]
     max_peers: usize,
+
+    /// Optional: Enable sending raw transactions.
+    #[arg(long)]
+    sendrawtx: bool,
+
+    /// Optional: Hex-encoded raw transaction to blast.
+    #[arg(long)]
+    tx: Option<String>,
 }
 
 /// Represents information about a connected peer.
@@ -126,6 +134,24 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let max_peers = cli.max_peers;
     let target_peer_addr = cli.target_peer_addr;
+    let send_raw_tx_enabled = cli.sendrawtx;
+    let tx_hex_string = cli.tx;
+
+    log::info!("Send raw transaction enabled: {}", send_raw_tx_enabled);
+
+    if send_raw_tx_enabled {
+        if let Some(tx_hex) = tx_hex_string {
+            log::info!("Attempting to send raw transaction: {}", tx_hex);
+            match send_raw_tx::send_raw_transaction_to_peers(tx_hex) {
+                Ok(_) => log::info!("Raw transaction sent successfully."),
+                Err(e) => log::error!("Failed to send raw transaction: {}", e),
+            }
+            return Ok(()); // Exit after sending transaction
+        } else {
+            log::error!("The --sendrawtx flag was provided, but no --tx was specified.");
+            return Err(anyhow::anyhow!("Missing --tx argument for --sendrawtx"));
+        }
+    }
 
     // Shared state for managing application lifecycle and data across threads.
     let running = Arc::new(AtomicBool::new(true)); // Flag to signal shutdown.
