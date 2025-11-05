@@ -117,8 +117,8 @@ impl App {
                     .split(size);
 
                 let block_height_value = *self.block_height.lock().unwrap();
-                let block_height_widget = Paragraph::new(format!("Current Block Height: {}", block_height_value))
-                    .block(Block::default().borders(Borders::ALL).title("Block Height").border_style(match self.focused_widget {
+                let block_height_widget = Paragraph::new(format!("120:Block: {}", block_height_value))
+                    .block(Block::default().borders(Borders::ALL).title(format!("121:Block: {}", block_height_value)).border_style(match self.focused_widget {
                         FocusedWidget::BlockHeight => Style::default().fg(Color::Magenta),
                         _ => Style::default().fg(Color::White),
                     }))
