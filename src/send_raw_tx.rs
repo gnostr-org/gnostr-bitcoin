@@ -60,7 +60,7 @@ enum NetworkAddress {
     Onion(String),
 }
 
-fn build_version_msg() -> VersionMessage {
+pub fn build_version_msg() -> VersionMessage {
     VersionMessage {
         version: 70016,
         services: ServiceFlags::from(NODE_NETWORK | NODE_WITNESS | NODE_LIBRE_RELAY),
@@ -174,7 +174,7 @@ async fn deliver_poop_tx(
         match timeout(CONNECTION_TIMEOUT, read_msg(&mut rd)).await {
             Ok(Ok(m)) => match m.payload() {
                 NetworkMessage::Tx(received_tx) => {
-                    if received_tx.txid() == txid {
+                    if received_tx.compute_txid() == txid {
                         info!(
                             "[CONFIRMED HIT] {:?} (UA: '{}') direct hit confirmed on libre node! poop deliverd",
                             addr, peer_version_message.user_agent
@@ -318,7 +318,7 @@ async fn crawl_seed_node(seed: &SocketAddr) -> Result<Vec<NetworkAddress>> {
     Ok(found_peers)
 }
 
-async fn send_msg<S: AsyncWriteExt + Unpin>(stream: &mut S, msg: NetworkMessage) -> Result<()> {
+pub async fn send_msg<S: AsyncWriteExt + Unpin>(stream: &mut S, msg: NetworkMessage) -> Result<()> {
     let mut buf = Vec::new();
     RawNetworkMessage::new(Magic::BITCOIN, msg).consensus_encode(&mut buf)?;
 
@@ -328,7 +328,7 @@ async fn send_msg<S: AsyncWriteExt + Unpin>(stream: &mut S, msg: NetworkMessage)
     Ok(())
 }
 
-async fn read_msg<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<RawNetworkMessage> {
+pub async fn read_msg<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<RawNetworkMessage> {
     let mut hdr = [0u8; 24];
     r.read_exact(&mut hdr).await?;
     let len = u32::from_le_bytes(hdr[16..20].try_into().unwrap()) as usize;
@@ -339,7 +339,7 @@ async fn read_msg<R: AsyncReadExt + Unpin>(r: &mut R) -> Result<RawNetworkMessag
     ))?)
 }
 
-fn tor_v3_onion_from_pubkey(pubkey: &[u8; 32]) -> String {
+pub fn tor_v3_onion_from_pubkey(pubkey: &[u8; 32]) -> String {
     let mut hasher = Sha3_256::new();
     hasher.update(b".onion checksum");
     hasher.update(pubkey);
@@ -359,7 +359,7 @@ pub fn send_raw_transaction_to_peers(tx_hex_string: String) -> Result<()> {
     rt.block_on(async {
 
         let tx = bitcoin::consensus::deserialize::<Transaction>(&hex::decode(tx_hex_string)?)?;
-        let txid = tx.txid();
+        let txid = tx.compute_txid();
 
         let mut seed_addrs = Vec::new();
         let mut seed_tasks = JoinSet::new();
