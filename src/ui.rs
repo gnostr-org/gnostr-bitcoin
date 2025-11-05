@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::{io, sync::{mpsc, Arc, Mutex, atomic::{AtomicBool, Ordering}}, time::{Duration, Instant, SystemTime}};
 use time::{OffsetDateTime, macros::format_description};
 use crossterm::{
@@ -14,6 +15,7 @@ use ratatui::{
     Terminal,
 };
 
+#[rustfmt::skip]
 const BITCOIN_LOGO: [&str; 15] = [
     "⠀⠀⠀⠀⠀⠀⠀⠀⣀⣤⣴⣶⣾⣿⣿⣿⣿⣷⣶⣦⣤⣀⠀⠀⠀⠀⠀⠀⠀⠀",
     "⠀⠀⠀⠀⠀⣠⣴⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣄⠀⠀⠀⠀⠀",
@@ -54,7 +56,7 @@ pub struct App {
     pub running: Arc<AtomicBool>,
     pub block_height: Arc<Mutex<i32>>,
     pub block_hash: Arc<Mutex<String>>,
-    pub peer_list: Arc<Mutex<Vec<(String, u64, u64)>>>,
+    pub peer_list: Arc<Mutex<HashMap<String, (u64, u64)>>>,
     pub focused_widget: FocusedWidget,
     last_user_input_time: Instant,
     auto_scroll_enabled: bool,
@@ -65,7 +67,7 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(messages: Arc<Mutex<Vec<(String, SystemTime)>>>, running: Arc<AtomicBool>, block_height: Arc<Mutex<i32>>, peer_list: Arc<Mutex<Vec<(String, u64, u64)>>>) -> App {
+    pub fn new(messages: Arc<Mutex<Vec<(String, SystemTime)>>>, running: Arc<AtomicBool>, block_height: Arc<Mutex<i32>>, peer_list: Arc<Mutex<HashMap<String, (u64, u64)>>>) -> App {
         App {
             messages,
             scroll_state: 0,
@@ -229,7 +231,7 @@ impl App {
                 // GEMINI - each peer in the list should be selectable which reveals other traits
                 // common to the bitcoin core peer list detail view
                 let peer_list_content: Vec<Line> = self.peer_list.lock().unwrap().iter()
-                    .map(|(peer_addr, inbound, outbound)| Line::from(Span::raw(format!("{} In: {} B, Out: {} B", peer_addr, inbound, outbound))))
+                    .map(|(peer_addr, bytes_transferred)| Line::from(Span::raw(format!("{} In: {} B, Out: {} B", peer_addr, bytes_transferred.0, bytes_transferred.1))))
                     .collect();
 
                 let peer_list_widget = Paragraph::new(peer_list_content)
@@ -325,7 +327,7 @@ impl App {
                                 self.auto_scroll_enabled = true;
                             }
                         },
-                        _ => {},
+                        _ => {{}},
                     }
                 },
                 Ok(Event::Tick) => {
@@ -368,7 +370,7 @@ impl App {
                     }
                     // --- End Scrolling Logic ---
                 },
-                Err(mpsc::RecvTimeoutError::Timeout) => {},
+                Err(mpsc::RecvTimeoutError::Timeout) => {{}},
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
                     self.running.store(false, Ordering::SeqCst);
                 }
