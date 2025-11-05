@@ -7,18 +7,81 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use ctrlc;
+use std::path::PathBuf;
+use std::fs;
+use serde::{Serialize, Deserialize};
 
 mod ui;
 
 pub const MAX_PEERS: usize = 8;
+const PEERS_FILE_NAME: &str = "peers.json";
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct PeerInfo {
+    addr: String,
+    inbound_traffic: u64,
+    outbound_traffic: u64,
+}
+
+fn get_app_data_dir() -> Result<PathBuf> {
+    let mut path = dirs::data_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not determine application data directory"))?;
+    path.push("gnostr-bitcoin");
+    Ok(path)
+}
+
+fn save_peers(peers: &std::collections::HashMap<String, (u64, u64)>) -> Result<()> {
+    let app_data_dir = get_app_data_dir()?;
+    fs::create_dir_all(&app_data_dir)?;
+    let peers_file_path = app_data_dir.join(PEERS_FILE_NAME);
+
+    let serializable_peers: Vec<PeerInfo> = peers.iter().map(|(addr, (inbound, outbound))| {
+        PeerInfo {
+            addr: addr.clone(),
+            inbound_traffic: *inbound,
+            outbound_traffic: *outbound,
+        }
+    }).collect();
+
+    let json = serde_json::to_string_pretty(&serializable_peers)?;
+    fs::write(peers_file_path, json)?;
+    log::info!("Saved {} peers.", peers.len());
+    Ok(())
+}
+
+fn load_peers() -> Result<std::collections::HashMap<String, (u64, u64)>> {
+    let app_data_dir = get_app_data_dir()?;
+    let peers_file_path = app_data_dir.join(PEERS_FILE_NAME);
+
+    if !peers_file_path.exists() {
+        log::info!("No peers file found at {:?}. Starting with empty peer list.", peers_file_path);
+        return Ok(std::collections::HashMap::new());
+    }
+
+    let json = fs::read_to_string(peers_file_path)?;
+    let serializable_peers: Vec<PeerInfo> = serde_json::from_str(&json)?;
+    let peers_map: std::collections::HashMap<String, (u64, u64)> = serializable_peers.into_iter().map(|p| {
+        (p.addr, (p.inbound_traffic, p.outbound_traffic))
+    }).collect();
+    log::info!("Loaded {} peers.", peers_map.len());
+    Ok(peers_map)
+}
 
 fn main() -> Result<()> {
     init_logger()?;
 
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
+    let peer_list_for_shutdown = Arc::new(Mutex::new(std::collections::HashMap::<String, (u64, u64)>::new()));
+    let peer_list_for_shutdown_clone = Arc::clone(&peer_list_for_shutdown);
+
     ctrlc::set_handler(move || {
+        log::info!("Ctrl-C received. Initiating shutdown...");
         r.store(false, Ordering::SeqCst);
+        // Attempt to save peers on shutdown
+        if let Err(e) = save_peers(&peer_list_for_shutdown_clone.lock().unwrap()) {
+            log::error!("Failed to save peers on shutdown: {}", e);
+        }
     }).expect("Error setting Ctrl-C handler");
 
     // 1. Setup shared state for messages and block height
@@ -27,12 +90,27 @@ fn main() -> Result<()> {
     let peer_list = Arc::new(Mutex::new(std::collections::HashMap::<String, (u64, u64)>::new()));
     let discovered_peers_queue = Arc::new(Mutex::new(Vec::<String>::new()));
 
+    // Load peers from file on startup
+    match load_peers() {
+        Ok(loaded_peers) => {
+            let mut discovered_peers_queue_lock = discovered_peers_queue.lock().unwrap();
+            for (addr, _) in loaded_peers.iter() {
+                discovered_peers_queue_lock.push(addr.clone());
+            }
+            log::info!("Added {} loaded peers to discovery queue.", loaded_peers.len());
+        },
+        Err(e) => {
+            log::error!("Failed to load peers on startup: {}", e);
+        }
+    }
+
     // Clone messages for the network thread
     let messages_clone = Arc::clone(&messages);
     let running_network_clone = Arc::clone(&running);
     let block_height_clone = Arc::clone(&block_height);
     let peer_list_clone = Arc::clone(&peer_list);
     let discovered_peers_queue_clone = Arc::clone(&discovered_peers_queue);
+    let peer_list_for_shutdown_network_clone = Arc::clone(&peer_list_for_shutdown);
 
     // 2. Spawn a thread for network operations
     let _network_thread_handle = std::thread::spawn(move || {
@@ -45,6 +123,9 @@ fn main() -> Result<()> {
         loop { // Main loop for managing connections
             if !running_network_clone.load(Ordering::SeqCst) {
                 add_message("Network thread received shutdown signal.".to_string());
+                // Before breaking, ensure the peer_list_for_shutdown is updated with the latest peer_list
+                let current_peer_list = peer_list_clone.lock().unwrap();
+                *peer_list_for_shutdown_network_clone.lock().unwrap() = current_peer_list.clone();
                 break;
             }
 
