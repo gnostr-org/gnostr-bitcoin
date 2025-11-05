@@ -37,6 +37,7 @@ const BITCOIN_LOGO: [&str; 15] = [
 const LOGO_HEIGHT: u16 = 15;
 const LOGO_WIDTH: u16 = 80;
 
+#[rustfmt::skip]
 const BITCOIN_ICON: [&str; 9] = [
    "⠀⠀⠀⠀⣿⡇⠀⢸⣿⡇⠀⠀⠀⠀",
    "⠸⠿⣿⣿⣿⡿⠿⠿⣿⣿⣿⣶⣄⠀",
@@ -50,6 +51,7 @@ const BITCOIN_ICON: [&str; 9] = [
 ];
 
 
+#[rustfmt::skip]
 const BITCOIN_LOGO_LARGE: [&str; 30] = [
     "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣀⣠⣤⣴⣶⣶⣿⣿⣿⣿⣿⣿⣿⣿⣶⣶⣶⣤⣄⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
     "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣠⣴⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣦⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
@@ -82,7 +84,7 @@ const BITCOIN_LOGO_LARGE: [&str; 30] = [
     "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠙⠻⢿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⡿⠟⠋⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
     "⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠙⠛⠻⠿⠿⢿⣿⣿⣿⣿⣿⣿⡿⠿⠿⠟⠛⠋⠉⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
 ];
-
+const LOGO_LARGE_HEIGHT: u16 = 30;
 
 pub enum Event<I> {
     Input(I),
@@ -112,6 +114,7 @@ pub struct App {
     log_widget_height: u16,
     pub log_visible: bool,
     peer_list_width_percentage: u16,
+    splash_screen_shown: bool,
 }
 
 impl App {
@@ -131,6 +134,7 @@ impl App {
             log_widget_height: 0,
             log_visible: true,
             peer_list_width_percentage: 50,
+            splash_screen_shown: false,
         }
     }
 
@@ -163,8 +167,8 @@ impl App {
 
         while self.running.load(Ordering::SeqCst) {
             terminal.draw(|f| {
-                // Check if it's the first start and no peers are connected
-                if self.peer_list.lock().unwrap().is_empty() {
+                // Check if it's the first start and no peers are connected, and splash screen hasn't been shown yet
+                if !self.splash_screen_shown && self.peer_list.lock().unwrap().is_empty() {
                     // Render splash screen with BITCOIN_LOGO_LARGE
                     let logo_area = f.size(); // Use the full screen for the splash screen
 
@@ -205,6 +209,10 @@ impl App {
 
                     // Render the logo widget in the center chunk
                     f.render_widget(logo_widget, centered_layout_horizontal[1]);
+
+                    // Set splash_screen_shown to true after rendering it once
+                    self.splash_screen_shown = true;
+
                 } else { // Existing UI rendering logic
                     let size = f.size();
                     let chunks = Layout::default()
