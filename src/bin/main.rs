@@ -128,7 +128,8 @@ fn load_peers() -> Result<std::collections::HashMap<String, (u64, u64)>> {
 
 /// The main function that orchestrates the Bitcoin P2P client.
 /// Initializes logging, TUI, and starts network and UI threads.
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     init_logger()?;
 
     let cli = Cli::parse();
@@ -137,13 +138,13 @@ fn main() -> Result<()> {
     let send_raw_tx_enabled = cli.sendrawtx;
     let tx_hex_string = cli.tx;
 
-    log::info!("Send raw transaction enabled: {}", send_raw_tx_enabled);
+    println!("Send raw transaction enabled: {}", send_raw_tx_enabled);
 
     if send_raw_tx_enabled {
         if let Some(tx_hex) = tx_hex_string {
-            log::info!("Attempting to send raw transaction: {}", tx_hex);
-            match send_raw_tx::send_raw_transaction_to_peers(tx_hex) {
-                Ok(_) => log::info!("Raw transaction sent successfully."),
+            println!("Attempting to send raw transaction: {}", tx_hex);
+            match send_raw_tx::send_raw_transaction_to_peers(tx_hex).await {
+                Ok(_) => println!("Raw transaction sent successfully."),
                 Err(e) => log::error!("Failed to send raw transaction: {}", e),
             }
             return Ok(()); // Exit after sending transaction

@@ -175,7 +175,7 @@ async fn deliver_poop_tx(
             Ok(Ok(m)) => match m.payload() {
                 NetworkMessage::Tx(received_tx) => {
                     if received_tx.compute_txid() == txid {
-                        info!(
+                        println!(
                             "[CONFIRMED HIT] {:?} (UA: '{}') direct hit confirmed on libre node! poop deliverd",
                             addr, peer_version_message.user_agent
                         );
@@ -206,7 +206,7 @@ async fn deliver_poop_tx(
                             false
                         }
                     }) {
-                        info!(
+                        println!(
                             "[CONFIRMED HIT] INV returned TX: direct hit confirmed on libre node! poop deliverd to {:?}! (UA: '{}')",
                             addr, peer_version_message.user_agent
                         );
@@ -238,9 +238,9 @@ async fn deliver_poop_tx(
 
 async fn crawl_seed_node(seed: &SocketAddr) -> Result<Vec<NetworkAddress>> {
     let mut found_peers = Vec::new();
-    info!("crawling seed {:?}", seed);
+    println!("crawling seed {:?}", seed);
     let mut stream = match timeout(
-        Duration::from_secs(2),
+        Duration::from_secs(1),
         tokio::net::TcpStream::connect((seed.ip().to_string(), seed.port())),
     )
     .await
@@ -258,9 +258,9 @@ async fn crawl_seed_node(seed: &SocketAddr) -> Result<Vec<NetworkAddress>> {
 
     let (mut rd, mut wr) = stream.split();
 
-    info!("waiting for addresses from {:?}...", seed);
+    println!("waiting for addresses from {:?}...", seed);
     loop {
-        let msg = match timeout(CONNECTION_TIMEOUT, read_msg(&mut rd)).await {
+        let msg = match timeout(Duration::from_secs(1), read_msg(&mut rd)).await {
             Ok(Ok(m)) => m,
             _ => break,
         };
@@ -354,153 +354,149 @@ pub fn tor_v3_onion_from_pubkey(pubkey: &[u8; 32]) -> String {
     BASE32_NOPAD.encode(&addr_raw).to_lowercase() + ".onion"
 }
 
-pub fn send_raw_transaction_to_peers(tx_hex_string: String) -> Result<()> {
-    let rt = Runtime::new()?;
-    rt.block_on(async {
+pub async fn send_raw_transaction_to_peers(tx_hex_string: String) -> Result<()> {
+    let tx = bitcoin::consensus::deserialize::<Transaction>(&hex::decode(tx_hex_string)?)?;
+    let txid = tx.compute_txid();
 
-        let tx = bitcoin::consensus::deserialize::<Transaction>(&hex::decode(tx_hex_string)?)?;
-        let txid = tx.compute_txid();
+    let mut seed_addrs = Vec::new();
+    let mut seed_tasks = JoinSet::new();
 
-        let mut seed_addrs = Vec::new();
-        let mut seed_tasks = JoinSet::new();
+    for seed_host in DNS_SEEDS {
+        println!("fetching addrs from {:?}", seed_host);
 
-        for seed_host in DNS_SEEDS {
-            info!("fetching addrs from {:?}", seed_host);
+        let host = seed_host.to_owned();
 
-            let host = seed_host.to_owned();
+        seed_tasks.spawn(async move {
+            let lookup = lookup_host(format!("{}:8333", seed_host));
 
-            seed_tasks.spawn(async move {
-                let lookup = lookup_host(format!("{}:8333", seed_host));
-
-                match timeout(Duration::from_secs(2), lookup).await {
-                    Ok(Ok(addrs)) => {
-                        let addrs: Vec<_> = addrs.collect();
-                        Ok((host, addrs))
-                    }
-                    Ok(Err(e)) => Err(anyhow::Error::new(e)),
-                    Err(_) => {
-                        error!("Timeout while looking up {}", seed_host);
-                        Err(anyhow::anyhow!("Timeout"))
-                    }
+            match timeout(Duration::from_secs(2), lookup).await {
+                Ok(Ok(addrs)) => {
+                    let addrs: Vec<_> = addrs.collect();
+                    Ok((host, addrs))
                 }
-            });
+                Ok(Err(e)) => Err(anyhow::Error::new(e)),
+                Err(_) => {
+                    error!("Timeout while looking up {}", seed_host);
+                    Err(anyhow::anyhow!("Timeout"))
+                }
+            }
+        });
+    }
+
+    while let Some(res) = seed_tasks.join_next().await {
+        match res {
+            Ok(Ok((host, addresses))) => {
+                info!("{} returned {} IPs", host, addresses.len());
+                seed_addrs.extend(addresses);
+            }
+            Ok(Err(crawl_error)) => {
+                error!("dns seed node error: {crawl_error},");
+            }
+            Err(join_error) => {
+                error!("join error during dns seed: {join_error}");
+            }
         }
+    }
 
-        while let Some(res) = seed_tasks.join_next().await {
-            match res {
-                Ok(Ok((host, addresses))) => {
-                    info!("{} returned {} IPs", host, addresses.len());
-                    seed_addrs.extend(addresses);
-                }
-                Ok(Err(crawl_error)) => {
-                    error!("dns seed node error: {crawl_error},");
-                }
-                Err(join_error) => {
-                    error!("join error during dns seed: {join_error}");
+    info!("found {} seed node addresses", seed_addrs.len());
+    seed_addrs.shuffle(&mut rand::rng());
+
+    info!("time to blast some nodes with pigeon poop! 🐦💩");
+
+    info!("blasting tx {:?} to libre relay nodes...", txid);
+
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_DELIVERIES));
+
+    let mut libre_peers = HashSet::<NetworkAddress>::new();
+    let mut crawl_tasks = JoinSet::new();
+
+    for addr in seed_addrs.clone() {
+        crawl_tasks.spawn({
+            let sem = semaphore.clone();
+            async move {
+                let _permit = sem.acquire_owned().await?;
+                crawl_seed_node(&addr).await
+            }
+        });
+    }
+
+    while let Some(res) = crawl_tasks.join_next().await {
+        match res {
+            Ok(Ok(addresses)) => {
+                libre_peers.extend(addresses);
+            }
+            Ok(Err(crawl_error)) => {
+                error!("crawl seed node error: {}", crawl_error);
+            }
+            Err(join_error) => {
+                error!("join error during crawl: {}", join_error);
+            }
+        }
+    }
+
+    info!(
+        "found {} addresses advertising the libre relay service flag",
+        libre_peers.len()
+    );
+
+    //connect to tor
+    info!("Bootstrapping Tor client...");
+    let config = TorClientConfig::builder().build()?;
+    let tor_client = Arc::new(TorClient::create_bootstrapped(config).await?);
+
+    let common_token = IsolationToken::no_isolation();
+    let mut prefs = StreamPrefs::new();
+    prefs.set_isolation(common_token);
+
+    let mut poop_delivery_tasks = JoinSet::new();
+    for peer_addr in libre_peers.clone() {
+        let tx_clone = tx.clone();
+        let permit = semaphore.clone().acquire_owned().await?;
+        let tor_client = tor_client.clone();
+        let peer_addr_cloned = peer_addr.clone();
+        let prefs = prefs.clone();
+        poop_delivery_tasks.spawn(async move {
+            let _permit_guard = permit;
+            match deliver_poop_tx(peer_addr_cloned.clone(), tx_clone, tor_client, prefs).await {
+                Ok(true) => Ok(peer_addr_cloned.clone()),
+                Ok(false) => Err((
+                    peer_addr_cloned.clone(),
+                    "No Tx confirmation, rejected, or skipped by peer.".to_string(),
+                )),
+                Err(e) => Err((peer_addr_cloned.clone(), e.to_string())),
+            }
+        });
+    }
+
+    let mut success_count = 0;
+
+    while let Some(res) = poop_delivery_tasks.join_next().await {
+        match res {
+            Ok(Ok(_)) => {
+                success_count += 1;
+            }
+            Ok(Err((_, _))) => (),
+            Err(join_error) => {
+                error!("join error during poop delivery: {}", join_error);
+                if join_error.is_panic() {
+                    error!("a poop delivery task panicked!");
                 }
             }
         }
+    }
 
-        info!("found {} seed node addresses", seed_addrs.len());
-        seed_addrs.shuffle(&mut rand::rng());
-
-        info!("time to blast some nodes with pigeon poop! 🐦💩");
-
-        info!("blasting tx {:?} to libre relay nodes...", txid);
-
-        let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_DELIVERIES));
-
-        let mut libre_peers = HashSet::<NetworkAddress>::new();
-        let mut crawl_tasks = JoinSet::new();
-
-        for addr in seed_addrs.clone() {
-            crawl_tasks.spawn({
-                let sem = semaphore.clone();
-                async move {
-                    let _permit = sem.acquire_owned().await?;
-                    crawl_seed_node(&addr).await
-                }
-            });
-        }
-
-        while let Some(res) = crawl_tasks.join_next().await {
-            match res {
-                Ok(Ok(addresses)) => {
-                    libre_peers.extend(addresses);
-                }
-                Ok(Err(crawl_error)) => {
-                    error!("crawl seed node error: {}", crawl_error);
-                }
-                Err(join_error) => {
-                    error!("join error during crawl: {}", join_error);
-                }
-            }
-        }
-
-        info!(
-            "found {} addresses advertising the libre relay service flag",
-            libre_peers.len()
+    if success_count == 0 {
+        error!(
+            "No libre relay nodes accepted the transaction. TX {} may already be in a block or its invalid.",
+            txid
         );
+        return Ok(());
+    }
 
-        //connect to tor
-        info!("Bootstrapping Tor client...");
-        let config = TorClientConfig::builder().build()?;
-        let tor_client = Arc::new(TorClient::create_bootstrapped(config).await?);
+    info!(
+        "TX: {:?} blasted to {} libre relay nodes. GLHF",
+        txid, success_count,
+    );
 
-        let common_token = IsolationToken::no_isolation();
-        let mut prefs = StreamPrefs::new();
-        prefs.set_isolation(common_token);
-
-        let mut poop_delivery_tasks = JoinSet::new();
-        for peer_addr in libre_peers.clone() {
-            let tx_clone = tx.clone();
-            let permit = semaphore.clone().acquire_owned().await?;
-            let tor_client = tor_client.clone();
-            let peer_addr_cloned = peer_addr.clone();
-            let prefs = prefs.clone();
-            poop_delivery_tasks.spawn(async move {
-                let _permit_guard = permit;
-                match deliver_poop_tx(peer_addr_cloned.clone(), tx_clone, tor_client, prefs).await {
-                    Ok(true) => Ok(peer_addr_cloned.clone()),
-                    Ok(false) => Err((
-                        peer_addr_cloned.clone(),
-                        "No Tx confirmation, rejected, or skipped by peer.".to_string(),
-                    )),
-                    Err(e) => Err((peer_addr_cloned.clone(), e.to_string())),
-                }
-            });
-        }
-
-        let mut success_count = 0;
-
-        while let Some(res) = poop_delivery_tasks.join_next().await {
-            match res {
-                Ok(Ok(_)) => {
-                    success_count += 1;
-                }
-                Ok(Err((_, _))) => (),
-                Err(join_error) => {
-                    error!("join error during poop delivery: {}", join_error);
-                    if join_error.is_panic() {
-                        error!("a poop delivery task panicked!");
-                    }
-                }
-            }
-        }
-
-        if success_count == 0 {
-            error!(
-                "No libre relay nodes accepted the transaction. TX {} may already be in a block or its invalid.",
-                txid
-            );
-            return Ok(());
-        }
-
-        info!(
-            "TX: {:?} blasted to {} libre relay nodes. GLHF",
-            txid, success_count,
-        );
-
-        Ok(())
-    })
+    Ok(())
 }
