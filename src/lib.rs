@@ -3,6 +3,7 @@ pub mod p2p;
 pub mod tor;
 pub mod send_raw_tx;
 //pub mod widget;
+pub mod tx_ui;
 
 // Re-exporting items from submodules to make them accessible at the crate root.
 // This allows users to import them like `gnostr_bitcoin::p2p::connect_and_handshake`.
@@ -23,6 +24,9 @@ pub use p2p::VarIntReader;
 pub use tor::initialize_tor_client;
 pub use tor::establish_tor_stream;
 
+// Re-exports for tx_ui module
+pub use tx_ui::{TxApp, TxProgress, TxStatus, init_tui as init_tx_tui, restore_tui as restore_tx_tui};
+
 use std::{
     fs::{self, File},
     io::{Read, Write},
@@ -38,13 +42,7 @@ use log::{LevelFilter, debug, error, info, warn};
 use sha2::{Digest, Sha256};
 use simplelog::{CombinedLogger, Config, WriteLogger};
 
-use crossterm::{
-    cursor::{MoveLeft, MoveToColumn},
-    execute,
-    style::Print,
-    terminal::{Clear, ClearType},
-};
-use std::io::{stdout, Write as IoWrite};
+use std::io::{Write as IoWrite};
 
 // --- Constants ---
 
@@ -77,47 +75,6 @@ pub const DNS_SEEDS: &[&str] = &[
     "seed.bitcoin.jonasschnelli.ch",
     "seed.mainnet.achownodes.xyz",
 ];
-
-// Spinner utility
-pub struct Spinner {
-    frames: Vec<&'static str>,
-    current_frame: usize,
-    message: String,
-}
-
-impl Spinner {
-    pub fn new(message: String) -> Self {
-        Spinner {
-            frames: vec!["-", "\\", "|", "/"],
-            current_frame: 0,
-            message,
-        }
-    }
-
-    pub fn start(&mut self) -> Result<()> {
-        execute!(stdout(), Print(format!("{}", self.message)))?;
-        self.update()?;
-        Ok(())
-    }
-
-    pub fn update(&mut self) -> Result<()> {
-        self.current_frame = (self.current_frame + 1) % self.frames.len();
-        execute!(
-            stdout(),
-            MoveToColumn(0),
-            Print(format!("{}{}", self.message, self.frames[self.current_frame]))
-        )?;
-        stdout().flush()?;
-        Ok(())
-    }
-
-    pub fn stop(&self) -> Result<()> {
-        execute!(stdout(), MoveToColumn(0), Clear(ClearType::CurrentLine))?;
-        stdout().flush()?;
-        Ok(())
-    }
-}
-
 /// Initializes the logging system.
 /// Creates a log directory if it doesn't exist and sets up a logger that writes
 /// to a file.

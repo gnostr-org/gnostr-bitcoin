@@ -20,6 +20,7 @@ use gnostr_bitcoin::{
     connect_and_handshake, init_logger, read_message, send_raw_tx,
 };
 use serde::{Deserialize, Serialize};
+use tracing::{debug, error, info};
 
 /// Maximum number of concurrent peer connections allowed.
 pub const MAX_PEERS: usize = 8;
@@ -97,7 +98,7 @@ fn save_peers(peers: &std::collections::HashMap<String, (u64, u64)>) -> Result<(
 
     let json = serde_json::to_string_pretty(&serializable_peers)?;
     fs::write(peers_file_path, json)?;
-    log::info!("Saved {} peers.", peers.len());
+    info!("Saved {} peers.", peers.len());
     Ok(())
 }
 
@@ -108,7 +109,7 @@ fn load_peers() -> Result<std::collections::HashMap<String, (u64, u64)>> {
     let peers_file_path = app_data_dir.join(PEERS_FILE_NAME);
 
     if !peers_file_path.exists() {
-        log::info!(
+        info!(
             "No peers file found at {:?}. Starting with empty peer list.",
             peers_file_path
         );
@@ -122,7 +123,7 @@ fn load_peers() -> Result<std::collections::HashMap<String, (u64, u64)>> {
         .into_iter()
         .map(|p| (p.addr, (p.total_inbound_traffic, p.total_outbound_traffic)))
         .collect();
-    log::info!("Loaded {} peers.", peers_map.len());
+    info!("Loaded {} peers.", peers_map.len());
     Ok(peers_map)
 }
 
@@ -138,18 +139,18 @@ async fn main() -> Result<()> {
     let send_raw_tx_enabled = cli.sendrawtx;
     let tx_hex_string = cli.tx;
 
-    println!("Send raw transaction enabled: {}", send_raw_tx_enabled);
+    debug!("Send raw transaction enabled: {}", send_raw_tx_enabled);
 
     if send_raw_tx_enabled {
         if let Some(tx_hex) = tx_hex_string {
-            println!("Attempting to send raw transaction: {}", tx_hex);
+            info!("Attempting to send raw transaction: {}", tx_hex);
             match send_raw_tx::send_raw_transaction_to_peers(tx_hex).await {
                 Ok(_) => println!("Raw transaction sent successfully."),
-                Err(e) => log::error!("Failed to send raw transaction: {}", e),
+                Err(e) => error!("Failed to send raw transaction: {}", e),
             }
             return Ok(()); // Exit after sending transaction
         } else {
-            log::error!("The --sendrawtx flag was provided, but no --tx was specified.");
+            error!("The --sendrawtx flag was provided, but no --tx was specified.");
             return Err(anyhow::anyhow!("Missing --tx argument for --sendrawtx"));
         }
     }
@@ -159,7 +160,7 @@ async fn main() -> Result<()> {
     let messages = Arc::new(Mutex::new(Vec::<(String, SystemTime)>::new())); // Log messages buffer.
     let block_height = Arc::new(Mutex::new(0)); // Current block height.
     let known_peers = Arc::new(Mutex::new(load_peers().unwrap_or_else(|e| {
-        log::error!("Failed to load known peers on startup: {}", e);
+        error!("Failed to load known peers on startup: {}", e);
         std::collections::HashMap::new()
     }))); // Cache of known peers and their traffic.
     let active_peers = Arc::new(Mutex::new(std::collections::HashMap::<
@@ -173,7 +174,7 @@ async fn main() -> Result<()> {
     for (addr, _) in known_peers.lock().unwrap().iter() {
         discovered_peers_queue_lock.push(addr.clone());
     }
-    log::info!(
+    info!(
         "Added {} known peers to discovery queue.",
         discovered_peers_queue_lock.len()
     );
@@ -243,7 +244,7 @@ async fn main() -> Result<()> {
     for new_peers_from_seed in rx_initial_peers.iter() {
         initial_discovered_peers.extend(new_peers_from_seed);
     }
-    log::info!(
+    info!(
         "Collected {} initial peers from DNS seeds.",
         initial_discovered_peers.len()
     );
@@ -257,7 +258,7 @@ async fn main() -> Result<()> {
         }
         known_peers_lock.entry(peer).or_insert((0, 0));
     }
-    log::info!(
+    info!(
         "Total peers in discovery queue after initial DNS scan: {}.",
         discovered_peers_queue_lock.len()
     );
@@ -270,11 +271,11 @@ async fn main() -> Result<()> {
     let known_peers_for_shutdown_ctrlc = Arc::clone(&known_peers);
 
     ctrlc::set_handler(move || {
-        log::info!("Ctrl-C received. Initiating shutdown...");
+        info!("Ctrl-C received. Initiating shutdown...");
         r_ctrlc.store(false, Ordering::SeqCst); // Signal running flag to false.
         // Attempt to save peer data before exiting.
         if let Err(e) = save_peers(&known_peers_for_shutdown_ctrlc.lock().unwrap()) {
-            log::error!("Failed to save peers on shutdown: {}", e);
+            error!("Failed to save peers on shutdown: {}", e);
         }
     })
     .expect("Error setting Ctrl-C handler");

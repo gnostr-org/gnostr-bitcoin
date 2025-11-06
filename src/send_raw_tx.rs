@@ -17,8 +17,6 @@ use rand::seq::SliceRandom;
 use sha3::{Digest, Sha3_256};
 use tor_rtcompat::PreferredRuntime;
 
-use crate::Spinner;
-
 use std::{
     collections::HashSet,
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -31,11 +29,11 @@ use tokio::{
     sync::Semaphore,
     task::JoinSet,
     time::timeout,
-    runtime::Runtime,
 };
 
 use data_encoding::BASE32_NOPAD;
 use tracing::{error, info};
+use crate::tx_ui::TuiSpinner;
 const DNS_SEEDS: &[&str] = &[
     "dnsseed.bluematt.me",
     "dnsseed.bitcoin.dashjr-list-of-p2p-nodes.us",
@@ -89,7 +87,7 @@ async fn deliver_poop_tx(
     tor_client: Arc<TorClient<PreferredRuntime>>,
     prefs: StreamPrefs,
 ) -> Result<bool> {
-    let txid = tx.txid();
+    let txid = tx.compute_txid();
 
     let mut stream = match &addr {
         NetworkAddress::Ip(sa) => {
@@ -238,7 +236,9 @@ async fn deliver_poop_tx(
 
 async fn crawl_seed_node(seed: &SocketAddr) -> Result<Vec<NetworkAddress>> {
     let mut found_peers = Vec::new();
-    println!("crawling seed {:?}", seed);
+    //print!("crawling seed:");
+    //let mut spinner = Spinner::new(format!("{:?}", seed));
+    println!("Crawling seed: {:?}", seed);
     let mut stream = match timeout(
         Duration::from_secs(1),
         tokio::net::TcpStream::connect((seed.ip().to_string(), seed.port())),
@@ -247,9 +247,11 @@ async fn crawl_seed_node(seed: &SocketAddr) -> Result<Vec<NetworkAddress>> {
     {
         Ok(Ok(s)) => s,
         Ok(Err(e)) => {
+            println!("Error connecting to seed {:?}: {:?}", seed, e);
             return Err(e.into());
         }
         Err(_) => {
+            println!("Timeout connecting to {:?}", seed);
             return Err(anyhow::anyhow!("Timeout connecting to {}", seed));
         }
     };
@@ -258,15 +260,23 @@ async fn crawl_seed_node(seed: &SocketAddr) -> Result<Vec<NetworkAddress>> {
 
     let (mut rd, mut wr) = stream.split();
 
-    let mut spinner = Spinner::new(format!("waiting for addresses from {:?}... ", seed));
-    spinner.start()?;
+    println!("Waiting for addresses from {:?}...", seed);
 
     loop {
-        spinner.update()?;
-        let msg = match timeout(Duration::from_secs(1), read_msg(&mut rd)).await {
+        let msg_result = timeout(Duration::from_secs(1), read_msg(&mut rd)).await;
+
+        let msg = match msg_result {
             Ok(Ok(m)) => m,
-            _ => break,
+            Ok(Err(e)) => {
+                error!("Read error from {:?}: {}", seed, e);
+                break; // Break loop on read error
+            }
+            Err(_) => {
+                error!("Timeout waiting for message from {:?}", seed);
+                break; // Break loop on timeout
+            }
         };
+
         match msg.payload() {
             NetworkMessage::Version(_) => {
                 send_msg(&mut wr, NetworkMessage::SendAddrV2).await?;
@@ -312,12 +322,15 @@ async fn crawl_seed_node(seed: &SocketAddr) -> Result<Vec<NetworkAddress>> {
                 }));
                 break;
             }
-            _ => {}
-        }
-    }
-
-    spinner.stop()?;
-    found_peers.shuffle(&mut rand::rng());
+                        _ => {
+                            // If we receive any other message, we break the loop.
+                            // This is to prevent infinite loops if the peer sends unexpected messages.
+                            break;
+                        }
+                    }
+                }
+            
+                found_peers.shuffle(&mut rand::rng());
 
     Ok(found_peers)
 }
@@ -366,7 +379,7 @@ pub async fn send_raw_transaction_to_peers(tx_hex_string: String) -> Result<()> 
     let mut seed_tasks = JoinSet::new();
 
     for seed_host in DNS_SEEDS {
-        println!("fetching addrs from {:?}", seed_host);
+        info!("fetching addrs from {:?}", seed_host);
 
         let host = seed_host.to_owned();
 
