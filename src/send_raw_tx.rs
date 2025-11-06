@@ -33,7 +33,6 @@ use tokio::{
 
 use data_encoding::BASE32_NOPAD;
 use tracing::{error, info};
-use crate::tx_ui::TuiSpinner;
 const DNS_SEEDS: &[&str] = &[
     "dnsseed.bluematt.me",
     "dnsseed.bitcoin.dashjr-list-of-p2p-nodes.us",

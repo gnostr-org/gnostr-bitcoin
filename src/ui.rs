@@ -105,6 +105,7 @@ pub enum FocusedWidget {
     Instructions,
     PeerList,
     Log,
+    Input,
 }
 
 pub struct App {
@@ -122,7 +123,9 @@ pub struct App {
     log_widget_height: u16,
     pub log_visible: bool,
     peer_list_width_percentage: u16,
-    splash_screen_shown: bool,
+    pub splash_screen_shown: bool,
+    pub input_text: String,
+    pub cursor_position: usize,
 }
 
 impl App {
@@ -148,7 +151,8 @@ impl App {
             log_visible: true,
             peer_list_width_percentage: 50,
             splash_screen_shown: false,
-        }
+            input_text: String::new(),
+            cursor_position: 0,        }
     }
 
     pub fn run(
@@ -216,6 +220,7 @@ impl App {
                                 Constraint::Length(3),
                                 Constraint::Length(3),
                                 Constraint::Min(0),
+                                Constraint::Length(3),
                             ]
                             .as_ref(),
                         )
@@ -412,15 +417,28 @@ impl App {
                             f.render_widget(peer_list_widget, bottom_half_chunks[1]); // Assuming bottom_half_chunks[1] is correct for the peer list pane
                         }
                     } else {
-                        // GEMINI we want to stretch the log widget
-                        // to fill horizontally when
-                        // self.peer_list_width_percentage = 0
-                    }
-                }
-            })?;
-
-            match rx.recv_timeout(tick_rate) {
-                Ok(Event::Input(event)) => {
+                                                                                        // GEMINI we want to stretch the log widget
+                                                                                        // to fill horizontally when
+                                                                                        // self.peer_list_width_percentage = 0
+                                                                                    }
+                                                                
+                                                                                    // Render the input command widget
+                                                                                    let input_widget = Paragraph::new(self.input_text.as_str())
+                                                                                        .block(
+                                                                                            Block::default()
+                                                                                                .borders(Borders::ALL)
+                                                                                                .title("Command Input")
+                                                                                                .border_style(match self.focused_widget {
+                                                                                                    FocusedWidget::Input => Style::default().fg(Color::Magenta),
+                                                                                                    _ => Style::default().fg(Color::White),
+                                                                                                }),
+                                                                                        )
+                                                                                        .style(Style::default().fg(Color::White));
+                                                                                    f.render_widget(input_widget, chunks[3]);
+                                                                                }
+                                                                            })?;
+                                                                
+                                                                            match rx.recv_timeout(tick_rate) {                Ok(Event::Input(event)) => {
                     self.last_user_input_time = Instant::now(); // Update timer on any input
                     match event.code {
                         KeyCode::Char('q') => {
@@ -431,7 +449,8 @@ impl App {
                                 FocusedWidget::BlockHeight => FocusedWidget::Instructions,
                                 FocusedWidget::Instructions => FocusedWidget::Log,
                                 FocusedWidget::Log => FocusedWidget::PeerList,
-                                FocusedWidget::PeerList => FocusedWidget::BlockHeight,
+                                FocusedWidget::PeerList => FocusedWidget::Input,
+                                FocusedWidget::Input => FocusedWidget::BlockHeight,
                             };
                         }
                         KeyCode::Down => {
@@ -508,6 +527,26 @@ impl App {
                                     self.scroll_state = 0;
                                 }
                                 self.auto_scroll_enabled = true;
+                            } else if let FocusedWidget::Input = self.focused_widget {
+                                // Process the command (for now, just clear the input)
+                                self.input_text.clear();
+                                self.cursor_position = 0;
+                            }
+                        }
+                        KeyCode::Char(c) => {
+                            if let FocusedWidget::Input = self.focused_widget {
+                                self.input_text.push(c);
+                                self.cursor_position += 1;
+                            } else if c == 'c' {
+                                self.focused_widget = FocusedWidget::Input;
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            if let FocusedWidget::Input = self.focused_widget {
+                                if self.cursor_position > 0 {
+                                    self.input_text.pop();
+                                    self.cursor_position -= 1;
+                                }
                             }
                         }
                         _ => {}

@@ -1,4 +1,3 @@
-use anyhow::Result;
 use crossterm::{
     event::{self, Event as CEvent, KeyCode},
     execute,
@@ -10,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap, Padding},
 };
 use std::{
     io::{self, stdout, Write},
@@ -151,7 +150,8 @@ impl TxApp {
                         Block::default()
                             .borders(Borders::ALL)
                             .title("Send Raw Transaction Progress")
-                            .border_style(Style::default().fg(Color::Cyan)),
+                            .border_style(Style::default().fg(Color::Cyan))
+                            .padding(ratatui::widgets::Padding::new(2, 2, 2, 2)),
                     )
                     .wrap(Wrap { trim: true });
 
