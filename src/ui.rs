@@ -20,7 +20,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph, Wrap, Clear},
 };
 use time::{OffsetDateTime, macros::format_description};
 
@@ -106,6 +106,7 @@ pub enum FocusedWidget {
     PeerList,
     Log,
     Input,
+    Modal,
 }
 
 pub struct App {
@@ -126,34 +127,60 @@ pub struct App {
     pub splash_screen_shown: bool,
     pub input_text: String,
     pub cursor_position: usize,
+    pub available_commands: Vec<String>,
+    pub current_suggestions: Vec<String>,
+    pub selected_suggestion_index: Option<usize>,
+    pub show_send_tx_modal: bool,
+    pub send_tx_modal_messages: Arc<Mutex<Vec<String>>>,
 }
 
 impl App {
-    pub fn new(
-        messages: Arc<Mutex<Vec<(String, SystemTime)>>>,
-        running: Arc<AtomicBool>,
-        block_height: Arc<Mutex<i32>>,
-        peer_list: Arc<Mutex<HashMap<String, (u64, u64, SystemTime)>>>,
-    ) -> App {
-        App {
-            messages,
-            scroll_state: 0,
-            running,
-            block_height,
-            block_hash: Arc::new(Mutex::new(String::new())),
-            peer_list,
-            focused_widget: FocusedWidget::Log,
-            last_user_input_time: Instant::now(),
-            auto_scroll_enabled: true,
-            current_scroll_y: 0.0,       // Initialize animated scroll position
-            scroll_animation_speed: 0.1, // Initialize animation speed
-            log_widget_height: 0,
-            log_visible: true,
-            peer_list_width_percentage: 50,
-            splash_screen_shown: false,
-            input_text: String::new(),
-            cursor_position: 0,        }
-    }
+        pub fn new(
+            messages: Arc<Mutex<Vec<(String, SystemTime)>>>,
+            running: Arc<AtomicBool>,
+            block_height: Arc<Mutex<i32>>,
+            peer_list: Arc<Mutex<HashMap<String, (u64, u64, SystemTime)>>>,
+        ) -> App {
+            App {
+                messages,
+                scroll_state: 0,
+                running,
+                block_height,
+                block_hash: Arc::new(Mutex::new(String::new())),
+                peer_list,
+                focused_widget: FocusedWidget::Log,
+                last_user_input_time: Instant::now(),
+                auto_scroll_enabled: true,
+                current_scroll_y: 0.0,       // Initialize animated scroll position
+                scroll_animation_speed: 0.1, // Initialize animation speed
+                log_widget_height: 0,
+                log_visible: true,
+                peer_list_width_percentage: 50,
+                splash_screen_shown: false,
+                input_text: String::new(),
+                cursor_position: 0,
+                available_commands: vec![
+                    "sendrawtransaction".to_string(),
+                    "getblockcount".to_string(),
+                    "getbestblockhash".to_string(),
+                    "getpeerinfo".to_string(),
+                    "help".to_string(),
+                ],
+                current_suggestions: Vec::new(),
+                            selected_suggestion_index: None,
+                            show_send_tx_modal: false,
+                            send_tx_modal_messages: Arc::new(Mutex::new(Vec::new())),
+                        }        }
+    
+        fn update_suggestions(&mut self) {
+            let input_lower = self.input_text.to_lowercase();
+            self.current_suggestions = self.available_commands
+                .iter()
+                .filter(|cmd| cmd.to_lowercase().starts_with(&input_lower))
+                .cloned()
+                .collect();
+            self.selected_suggestion_index = if self.current_suggestions.is_empty() { None } else { Some(0) };
+        }
 
     pub fn run(
         &mut self,
@@ -220,6 +247,7 @@ impl App {
                                 Constraint::Length(3),
                                 Constraint::Length(3),
                                 Constraint::Min(0),
+                                Constraint::Length(1), // For suggestions
                                 Constraint::Length(3),
                             ]
                             .as_ref(),
@@ -422,36 +450,111 @@ impl App {
                                                                                         // self.peer_list_width_percentage = 0
                                                                                     }
                                                                 
-                                                                                    // Render the input command widget
-                                                                                    let input_widget = Paragraph::new(self.input_text.as_str())
-                                                                                        .block(
-                                                                                            Block::default()
-                                                                                                .borders(Borders::ALL)
-                                                                                                .title("Command Input")
-                                                                                                .border_style(match self.focused_widget {
-                                                                                                    FocusedWidget::Input => Style::default().fg(Color::Magenta),
-                                                                                                    _ => Style::default().fg(Color::White),
-                                                                                                }),
-                                                                                        )
-                                                                                        .style(Style::default().fg(Color::White));
-                                                                                    f.render_widget(input_widget, chunks[3]);
-                                                                                }
-                                                                            })?;
-                                                                
-                                                                            match rx.recv_timeout(tick_rate) {                Ok(Event::Input(event)) => {
+                                                                                                        // Render command suggestions
+                                                                                                        if self.focused_widget == FocusedWidget::Input && !self.current_suggestions.is_empty() {
+                                                                                                            let suggestions_text: Vec<Span> = self.current_suggestions.iter().enumerate().map(|(i, s)| {
+                                                                                                                if Some(i) == self.selected_suggestion_index {
+                                                                                                                    Span::styled(format!(" {} ", s), Style::default().fg(Color::Black).bg(Color::Gray))
+                                                                                                                } else {
+                                                                                                                    Span::raw(format!(" {} ", s))
+                                                                                                                }
+                                                                                                            }).collect();
+                                                                                    
+                                                                                                            let suggestions_widget = Paragraph::new(Line::from(suggestions_text))
+                                                                                                                .block(Block::default().borders(Borders::NONE))
+                                                                                                                .style(Style::default().fg(Color::White));
+                                                                                                            f.render_widget(suggestions_widget, chunks[3]);
+                                                                                                        }
+                                                                                    
+                                                                                                        // Render the input command widget
+                                                                                                        let input_widget = Paragraph::new(self.input_text.as_str())
+                                                                                                            .block(
+                                                                                                                Block::default()
+                                                                                                                    .borders(Borders::ALL)
+                                                                                                                    .title("Command Input")
+                                                                                                                    .border_style(match self.focused_widget {
+                                                                                                                        FocusedWidget::Input => Style::default().fg(Color::Magenta),
+                                                                                                                        _ => Style::default().fg(Color::White),
+                                                                                                                    }),
+                                                                                                            )
+                                                                                                            .style(Style::default().fg(Color::White));
+                                                                                                                            f.render_widget(input_widget, chunks[4]);
+                                                                                                        
+                                                                                                                            // Render the modal if active
+                                                                                                                            if self.show_send_tx_modal {
+                                                                                                                                let modal_area = Layout::default()
+                                                                                                                                    .direction(Direction::Vertical)
+                                                                                                                                    .constraints(
+                                                                                                                                        [
+                                                                                                                                            Constraint::Percentage(30),
+                                                                                                                                            Constraint::Percentage(40),
+                                                                                                                                            Constraint::Percentage(30),
+                                                                                                                                        ]
+                                                                                                                                        .as_ref(),
+                                                                                                                                    )
+                                                                                                                                    .split(f.size())[1]; // Center vertically
+                                                                                                        
+                                                                                                                                let modal_chunks = Layout::default()
+                                                                                                                                    .direction(Direction::Horizontal)
+                                                                                                                                    .constraints(
+                                                                                                                                        [
+                                                                                                                                            Constraint::Percentage(20),
+                                                                                                                                            Constraint::Percentage(60),
+                                                                                                                                            Constraint::Percentage(20),
+                                                                                                                                        ]
+                                                                                                                                        .as_ref(),
+                                                                                                                                    )
+                                                                                                                                    .split(modal_area);
+                                                                                                        
+                                                                                                                                let modal_block = Block::default()
+                                                                                                                                    .borders(Borders::ALL)
+                                                                                                                                    .title("Sending Raw Transaction")
+                                                                                                                                    .border_style(Style::default().fg(Color::Red));
+                                                                                                        
+                                                                                                                                let modal_messages: Vec<Line> = self.send_tx_modal_messages.lock().unwrap()
+                                                                                                                                    .iter()
+                                                                                                                                    .map(|msg| Line::from(Span::raw(msg.clone())))
+                                                                                                                                    .collect();
+                                                                                                        
+                                                                                                                                let modal_paragraph = Paragraph::new(modal_messages)
+                                                                                                                                    .block(modal_block)
+                                                                                                                                    .wrap(Wrap { trim: true });
+                                                                                                        
+                                                                                                                                f.render_widget(Clear, modal_chunks[1]); // Clear the area first
+                                                                                                                                f.render_widget(modal_paragraph, modal_chunks[1]);
+                                                                                                                            }
+                                                                                                                        }
+                                                                                                                    })?;
+                                                                                                        
+                                                                                                                    match rx.recv_timeout(tick_rate) {                Ok(Event::Input(event)) => {
                     self.last_user_input_time = Instant::now(); // Update timer on any input
                     match event.code {
                         KeyCode::Char('q') => {
                             self.running.store(false, Ordering::SeqCst);
                         }
                         KeyCode::Tab => {
-                            self.focused_widget = match self.focused_widget {
-                                FocusedWidget::BlockHeight => FocusedWidget::Instructions,
-                                FocusedWidget::Instructions => FocusedWidget::Log,
-                                FocusedWidget::Log => FocusedWidget::PeerList,
-                                FocusedWidget::PeerList => FocusedWidget::Input,
-                                FocusedWidget::Input => FocusedWidget::BlockHeight,
-                            };
+                            if let FocusedWidget::Input = self.focused_widget {
+                                if !self.current_suggestions.is_empty() {
+                                    let next_index = match self.selected_suggestion_index {
+                                        Some(i) => (i + 1) % self.current_suggestions.len(),
+                                        None => 0,
+                                    };
+                                    self.selected_suggestion_index = Some(next_index);
+                                } else {
+                                    // If no suggestions, move focus out of input
+                                    self.focused_widget = FocusedWidget::BlockHeight;
+                                }
+                            } else {
+                                // Cycle through other widgets
+                                self.focused_widget = match self.focused_widget {
+                                    FocusedWidget::BlockHeight => FocusedWidget::Instructions,
+                                    FocusedWidget::Instructions => FocusedWidget::Log,
+                                    FocusedWidget::Log => FocusedWidget::PeerList,
+                                    FocusedWidget::PeerList => FocusedWidget::Input,
+                                    FocusedWidget::Input => FocusedWidget::Modal,
+                                    FocusedWidget::Modal => FocusedWidget::BlockHeight,
+                                };
+                            }
                         }
                         KeyCode::Down => {
                             if let FocusedWidget::Log = self.focused_widget {
@@ -465,12 +568,29 @@ impl App {
                                 } else {
                                     self.auto_scroll_enabled = false;
                                 }
+                            } else if let FocusedWidget::Input = self.focused_widget {
+                                if !self.current_suggestions.is_empty() {
+                                    let next_index = match self.selected_suggestion_index {
+                                        Some(i) => (i + 1) % self.current_suggestions.len(),
+                                        None => 0,
+                                    };
+                                    self.selected_suggestion_index = Some(next_index);
+                                }
                             }
                         }
                         KeyCode::Up => {
                             if let FocusedWidget::Log = self.focused_widget {
                                 self.scroll_state = self.scroll_state.saturating_sub(1);
                                 self.auto_scroll_enabled = false; // User manually scrolled
+                            } else if let FocusedWidget::Input = self.focused_widget {
+                                if !self.current_suggestions.is_empty() {
+                                    let prev_index = match self.selected_suggestion_index {
+                                        Some(0) => self.current_suggestions.len() - 1,
+                                        Some(i) => i - 1,
+                                        None => self.current_suggestions.len() - 1,
+                                    };
+                                    self.selected_suggestion_index = Some(prev_index);
+                                }
                             }
                         }
                         KeyCode::Left => {
@@ -490,7 +610,10 @@ impl App {
                             };
                         }
                         KeyCode::Esc => {
-                            if self.focused_widget == FocusedWidget::Log
+                            if self.show_send_tx_modal {
+                                self.show_send_tx_modal = false;
+                                self.send_tx_modal_messages.lock().unwrap().clear();
+                            } else if self.focused_widget == FocusedWidget::Log
                                 && !self.auto_scroll_enabled
                             {
                                 self.auto_scroll_enabled = true;
@@ -528,15 +651,38 @@ impl App {
                                 }
                                 self.auto_scroll_enabled = true;
                             } else if let FocusedWidget::Input = self.focused_widget {
-                                // Process the command (for now, just clear the input)
-                                self.input_text.clear();
-                                self.cursor_position = 0;
+                                if let Some(index) = self.selected_suggestion_index {
+                                    if let Some(command) = self.current_suggestions.get(index) {
+                                        self.input_text.clear();
+                                        self.input_text.push_str(command);
+                                        self.input_text.push(' '); // Add a space after the command
+                                        self.cursor_position = self.input_text.len();
+                                        self.current_suggestions.clear();
+                                        self.selected_suggestion_index = None;
+                                    }
+                                } else {
+                                    // Process the command
+                                    let command_text = self.input_text.trim().to_string();
+                                    if command_text.starts_with("sendrawtransaction") {
+                                        self.show_send_tx_modal = true;
+                                        self.send_tx_modal_messages.lock().unwrap().push(format!("Attempting to send raw transaction: {}", command_text));
+                                        // In a real scenario, you'd parse the transaction hex and initiate sending here.
+                                        // For now, just simulate some logging.
+                                        self.send_tx_modal_messages.lock().unwrap().push("Connecting to peers...".to_string());
+                                    } else {
+                                        // Handle other commands or log unknown command
+                                        self.messages.lock().unwrap().push((format!("Unknown command: {}", command_text), SystemTime::now()));
+                                    }
+                                    self.input_text.clear();
+                                    self.cursor_position = 0;
+                                }
                             }
                         }
                         KeyCode::Char(c) => {
                             if let FocusedWidget::Input = self.focused_widget {
                                 self.input_text.push(c);
                                 self.cursor_position += 1;
+                                self.update_suggestions();
                             } else if c == 'c' {
                                 self.focused_widget = FocusedWidget::Input;
                             }
@@ -546,6 +692,7 @@ impl App {
                                 if self.cursor_position > 0 {
                                     self.input_text.pop();
                                     self.cursor_position -= 1;
+                                    self.update_suggestions();
                                 }
                             }
                         }
