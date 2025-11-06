@@ -17,6 +17,8 @@ use rand::seq::SliceRandom;
 use sha3::{Digest, Sha3_256};
 use tor_rtcompat::PreferredRuntime;
 
+use crate::Spinner;
+
 use std::{
     collections::HashSet,
     net::{IpAddr, Ipv4Addr, SocketAddr},
@@ -34,14 +36,6 @@ use tokio::{
 
 use data_encoding::BASE32_NOPAD;
 use tracing::{error, info};
-use crossterm::{
-    cursor::{MoveLeft, MoveToColumn},
-    execute,
-    style::Print,
-    terminal::{Clear, ClearType},
-};
-use std::io::{stdout, Write};
-
 const DNS_SEEDS: &[&str] = &[
     "dnsseed.bluematt.me",
     "dnsseed.bitcoin.dashjr-list-of-p2p-nodes.us",
@@ -66,47 +60,6 @@ enum NetworkAddress {
     Ip(SocketAddr),
     Onion(String),
 }
-
-// Spinner utility
-struct Spinner {
-    frames: Vec<&'static str>,
-    current_frame: usize,
-    message: String,
-}
-
-impl Spinner {
-    fn new(message: String) -> Self {
-        Spinner {
-            frames: vec!["-", "\\", "|", "/"],
-            current_frame: 0,
-            message,
-        }
-    }
-
-    fn start(&mut self) -> Result<()> {
-        execute!(stdout(), Print(format!("{}", self.message)))?;
-        self.update()?;
-        Ok(())
-    }
-
-    fn update(&mut self) -> Result<()> {
-        self.current_frame = (self.current_frame + 1) % self.frames.len();
-        execute!(
-            stdout(),
-            MoveToColumn(0),
-            Print(format!("{}{}", self.message, self.frames[self.current_frame]))
-        )?;
-        stdout().flush()?;
-        Ok(())
-    }
-
-    fn stop(&self) -> Result<()> {
-        execute!(stdout(), MoveToColumn(0), Clear(ClearType::CurrentLine))?;
-        stdout().flush()?;
-        Ok(())
-    }
-}
-
 pub fn build_version_msg() -> VersionMessage {
     VersionMessage {
         version: 70016,
@@ -285,8 +238,7 @@ async fn deliver_poop_tx(
 
 async fn crawl_seed_node(seed: &SocketAddr) -> Result<Vec<NetworkAddress>> {
     let mut found_peers = Vec::new();
-    let mut spinner = Spinner::new(format!("crawling seed {:?}... ", seed));
-    spinner.start()?;
+    println!("crawling seed {:?}", seed);
     let mut stream = match timeout(
         Duration::from_secs(1),
         tokio::net::TcpStream::connect((seed.ip().to_string(), seed.port())),
