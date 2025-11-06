@@ -34,6 +34,13 @@ use tokio::{
 
 use data_encoding::BASE32_NOPAD;
 use tracing::{error, info};
+use crossterm::{
+    cursor::{MoveLeft, MoveToColumn},
+    execute,
+    style::Print,
+    terminal::{Clear, ClearType},
+};
+use std::io::{stdout, Write};
 
 const DNS_SEEDS: &[&str] = &[
     "dnsseed.bluematt.me",
@@ -58,6 +65,46 @@ const CONNECTION_TIMEOUT: Duration = Duration::from_secs(12);
 enum NetworkAddress {
     Ip(SocketAddr),
     Onion(String),
+}
+
+// Spinner utility
+struct Spinner {
+    frames: Vec<&'static str>,
+    current_frame: usize,
+    message: String,
+}
+
+impl Spinner {
+    fn new(message: String) -> Self {
+        Spinner {
+            frames: vec!["-", "\\", "|", "/"],
+            current_frame: 0,
+            message,
+        }
+    }
+
+    fn start(&mut self) -> Result<()> {
+        execute!(stdout(), Print(format!("{}", self.message)))?;
+        self.update()?;
+        Ok(())
+    }
+
+    fn update(&mut self) -> Result<()> {
+        self.current_frame = (self.current_frame + 1) % self.frames.len();
+        execute!(
+            stdout(),
+            MoveToColumn(0),
+            Print(format!("{}{}", self.message, self.frames[self.current_frame]))
+        )?;
+        stdout().flush()?;
+        Ok(())
+    }
+
+    fn stop(&self) -> Result<()> {
+        execute!(stdout(), MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+        stdout().flush()?;
+        Ok(())
+    }
 }
 
 pub fn build_version_msg() -> VersionMessage {
@@ -238,7 +285,8 @@ async fn deliver_poop_tx(
 
 async fn crawl_seed_node(seed: &SocketAddr) -> Result<Vec<NetworkAddress>> {
     let mut found_peers = Vec::new();
-    println!("crawling seed {:?}", seed);
+    let mut spinner = Spinner::new(format!("crawling seed {:?}... ", seed));
+    spinner.start()?;
     let mut stream = match timeout(
         Duration::from_secs(1),
         tokio::net::TcpStream::connect((seed.ip().to_string(), seed.port())),
@@ -258,8 +306,11 @@ async fn crawl_seed_node(seed: &SocketAddr) -> Result<Vec<NetworkAddress>> {
 
     let (mut rd, mut wr) = stream.split();
 
-    println!("waiting for addresses from {:?}...", seed);
+    let mut spinner = Spinner::new(format!("waiting for addresses from {:?}... ", seed));
+    spinner.start()?;
+
     loop {
+        spinner.update()?;
         let msg = match timeout(Duration::from_secs(1), read_msg(&mut rd)).await {
             Ok(Ok(m)) => m,
             _ => break,
@@ -313,6 +364,7 @@ async fn crawl_seed_node(seed: &SocketAddr) -> Result<Vec<NetworkAddress>> {
         }
     }
 
+    spinner.stop()?;
     found_peers.shuffle(&mut rand::rng());
 
     Ok(found_peers)
