@@ -23,29 +23,35 @@ path = "src/bin/main.rs"
 
 [dependencies]
 anyhow = "1.0.98"
+arti-client = { version = "0.30", features = ["native-tls", "onion-service-client"] }
+bitcoin = { version = "0.32.5", features = ["serde"] }
+clap = { version = "4.5.38", features = ["derive", "env", "cargo"] }
 crossterm = "0.27.0"
+#crossterm = "0.28.1"
 ctrlc = { version = "3.4.4", features = ["termination"] }
+data-encoding = "2.9.0"
 dirs = "5.0.0"
+futures = "0.3.31"
+hex = "0.4"
+image = "0.25.6"
 log = "0.4.21"
 rand = "0.9.1"
+
 ratatui = "0.26.1"
+
+ratatui-image = "8.0.2"
+#ratatui = "0.29.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10.9"
-simplelog = "0.12.2"
-time = { version = "0.3", features = ["macros", "formatting"] }
-clap = { version = "4.5.38", features = ["derive", "env", "cargo"] }
-bitcoin = { version = "0.32.5", features = ["serde"] }
-hex = "0.4"
 sha3 = "0.10.8"
+simplelog = "0.12.2"
+soft_ratatui = "0.1.2"
+time = { version = "0.3", features = ["macros", "formatting"] }
 tokio = { version = "1", features = ["full"] }
-futures = "0.3.31"
-tracing-subscriber = "0.3.19"
-tracing = "0.1.41"
-arti-client = { version = "0.30", features = ["native-tls", "onion-service-client"] }
 tor-rtcompat = { version = "0.30", features = ["tokio"] }
-data-encoding = "2.9.0"
-
+tracing = "0.1.41"
+tracing-subscriber = "0.3.19"
 
 # The profile that 'dist' will build with
 [profile.dist]
