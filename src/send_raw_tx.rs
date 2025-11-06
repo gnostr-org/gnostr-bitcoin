@@ -1,7 +1,7 @@
 use anyhow::Result;
 use arti_client::{IsolationToken, StreamPrefs, TorClient, TorClientConfig};
 use bitcoin::{
-    Transaction, Txid,
+    Transaction,
     consensus::{Decodable, Encodable},
     p2p::{
         Address, Magic, ServiceFlags,
