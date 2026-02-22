@@ -18,14 +18,23 @@ use gnostr_bitcoin::ui::{App, init_tui, restore_tui};
 use gnostr_bitcoin::{
     ActivePeerState, DEFAULT_PORT, DNS_SEEDS, build_mempool_message, build_ping_message,
     build_pong_message, connect_and_handshake, init_logger, read_message, send_raw_tx,
+    build_getheaders_message, VarIntReader,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
+use sha2::{Digest, Sha256};
 
 /// Maximum number of concurrent peer connections allowed.
 pub const MAX_PEERS: usize = 8;
 /// Filename for storing peer information persistently.
 const PEERS_FILE_NAME: &str = "peers.json";
+
+const GENESIS_HASH: [u8; 32] = [
+    0x6f, 0x26, 0xce, 0xa8, 0x60, 0x1b, 0x3f, 0x2b,
+    0x17, 0x6c, 0x2a, 0x46, 0xae, 0x63, 0xff, 0x93,
+    0x1e, 0x38, 0x65, 0xae, 0x08, 0x9c, 0x68, 0xd6,
+    0x19, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -159,6 +168,7 @@ async fn main() -> Result<()> {
     let running = Arc::new(AtomicBool::new(true)); // Flag to signal shutdown.
     let messages = Arc::new(Mutex::new(Vec::<(String, SystemTime)>::new())); // Log messages buffer.
     let block_height = Arc::new(Mutex::new(0)); // Current block height.
+    let block_hash = Arc::new(Mutex::new(String::new())); // Current block hash.
     let known_peers = Arc::new(Mutex::new(load_peers().unwrap_or_else(|e| {
         error!("Failed to load known peers on startup: {}", e);
         std::collections::HashMap::new()
@@ -284,6 +294,7 @@ async fn main() -> Result<()> {
     let messages_network = Arc::clone(&messages);
     let running_network = Arc::clone(&running);
     let block_height_network = Arc::clone(&block_height);
+    let block_hash_network = Arc::clone(&block_hash);
     let active_peers_network = Arc::clone(&active_peers);
     let known_peers_network = Arc::clone(&known_peers);
     let discovered_peers_queue_network = Arc::clone(&discovered_peers_queue);
@@ -451,6 +462,7 @@ async fn main() -> Result<()> {
                 let known_peers_clone_for_peer_thread = Arc::clone(&known_peers_network);
                 let messages_clone_for_peer_thread = Arc::clone(&messages_network);
                 let running_network_clone_for_peer_thread = Arc::clone(&running_network);
+                let block_hash_clone_for_peer_thread = Arc::clone(&block_hash_network);
                 let peer_addr_for_peer_thread = connected_peer_addr.clone();
 
                 // Spawn a thread to handle communication with this specific peer.
@@ -484,6 +496,28 @@ async fn main() -> Result<()> {
                         Err(e) => {
                             add_message_for_peer(format!(
                                 "[ERROR] Failed to build mempool message: {}",
+                                e
+                            ));
+                        }
+                    }
+
+                    // Send 'getheaders' to request headers starting from genesis.
+                    add_message_for_peer("Requesting block headers...".to_string());
+                    match build_getheaders_message(vec![GENESIS_HASH], [0u8; 32]) {
+                        Ok(getheaders_msg) => {
+                             if let Err(e) = stream.write_all(&getheaders_msg) {
+                                add_message_for_peer(format!(
+                                    "[ERROR] Failed to send getheaders request: {}",
+                                    e
+                                ));
+                            } else {
+                                session_outbound_traffic += getheaders_msg.len() as u64;
+                                add_message_for_peer("Sent 'getheaders' request.".to_string());
+                            }
+                        }
+                        Err(e) => {
+                            add_message_for_peer(format!(
+                                "[ERROR] Failed to build getheaders message: {}",
                                 e
                             ));
                         }
@@ -618,9 +652,52 @@ async fn main() -> Result<()> {
                                             }
                                             "headers" => {
                                                 add_message_for_peer(
-                                                    "[INFO] Received 'headers' message."
-                                                        .to_string(),
+                                                    "[INFO] Received 'headers' message.".to_string(),
                                                 );
+                                                // Parse headers to get the latest block hash
+                                                let mut offset = 0;
+                                                match payload.read_varint_and_advance(offset) {
+                                                    Ok((count, bytes_read)) => {
+                                                        offset += bytes_read;
+                                                        add_message_for_peer(format!("[INFO] 'headers' message contains {} headers.", count));
+                                                        
+                                                        let mut last_header_hash: Option<String> = None;
+                                                        
+                                                        for _ in 0..count {
+                                                            if payload.len() < offset + 80 {
+                                                                break;
+                                                            }
+                                                            let header_bytes = &payload[offset..offset+80];
+                                                            
+                                                            // Calculate Double-SHA256 hash of the header
+                                                            let hash1 = Sha256::digest(header_bytes);
+                                                            let hash2 = Sha256::digest(hash1);
+                                                            
+                                                            // Bitcoin hashes are little-endian displayed, so we reverse bytes
+                                                            let mut hash_bytes = hash2.to_vec();
+                                                            hash_bytes.reverse();
+                                                            last_header_hash = Some(hex::encode(hash_bytes));
+                                                            
+                                                            offset += 80;
+                                                            
+                                                            // Read tx count (should be 0 for headers)
+                                                            match payload.read_varint_and_advance(offset) {
+                                                                Ok((_tx_count, bytes_read_tx)) => {
+                                                                    offset += bytes_read_tx;
+                                                                }
+                                                                Err(_) => break,
+                                                            }
+                                                        }
+                                                        
+                                                        if let Some(hash) = last_header_hash {
+                                                            add_message_for_peer(format!("[INFO] Updating block hash to: {}", hash));
+                                                            *block_hash_clone_for_peer_thread.lock().unwrap() = hash;
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        add_message_for_peer(format!("[ERROR] Failed to parse headers count: {}", e));
+                                                    }
+                                                }
                                             }
                                             "getheaders" => {
                                                 add_message_for_peer(
@@ -737,6 +814,7 @@ async fn main() -> Result<()> {
         Arc::clone(&messages),
         Arc::clone(&running),
         Arc::clone(&block_height),
+        Arc::clone(&block_hash),
         Arc::clone(&active_peers),
     );
 

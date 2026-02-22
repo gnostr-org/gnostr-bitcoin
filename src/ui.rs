@@ -141,6 +141,7 @@ impl App {
             messages: Arc<Mutex<Vec<(String, SystemTime)>>>,
             running: Arc<AtomicBool>,
             block_height: Arc<Mutex<i32>>,
+            block_hash: Arc<Mutex<String>>,
             peer_list: Arc<Mutex<HashMap<String, ActivePeerState>>>,
         ) -> App {
             App {
@@ -148,7 +149,7 @@ impl App {
                 scroll_state: 0,
                 running,
                 block_height,
-                block_hash: Arc::new(Mutex::new(String::new())),
+                block_hash,
                 peer_list,
                 focused_widget: FocusedWidget::Log,
                 last_user_input_time: Instant::now(),
