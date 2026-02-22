@@ -16,8 +16,8 @@ use clap::Parser;
 /// Sets up logging to file and console output.
 use gnostr_bitcoin::ui::{App, init_tui, restore_tui};
 use gnostr_bitcoin::{
-    DEFAULT_PORT, DNS_SEEDS, build_mempool_message, build_ping_message, build_pong_message,
-    connect_and_handshake, init_logger, read_message, send_raw_tx,
+    ActivePeerState, DEFAULT_PORT, DNS_SEEDS, build_mempool_message, build_ping_message,
+    build_pong_message, connect_and_handshake, init_logger, read_message, send_raw_tx,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
@@ -165,7 +165,7 @@ async fn main() -> Result<()> {
     }))); // Cache of known peers and their traffic.
     let active_peers = Arc::new(Mutex::new(std::collections::HashMap::<
         String,
-        (u64, u64, SystemTime),
+        ActivePeerState,
     >::new())); // Currently active connections.
     let discovered_peers_queue = Arc::new(Mutex::new(Vec::<String>::new())); // Queue for discovered peers to connect to.
 
@@ -218,7 +218,7 @@ async fn main() -> Result<()> {
                 running_clone,
                 Some(seed_addr.clone()), // Target this specific seed
             );
-            if let Ok((_, _, new_peers)) = conn_result {
+            if let Ok((_, _, new_peers, _, _)) = conn_result {
                 add_message(format!(
                     "Discovered {} new peers from {}.",
                     new_peers.len(),
@@ -309,15 +309,15 @@ async fn main() -> Result<()> {
                 // Update known_peers with traffic from active connections before exiting.
                 let mut known_peers_lock = known_peers_network.lock().unwrap();
                 let active_peers_lock = active_peers_network.lock().unwrap();
-                for (addr, (in_traffic, out_traffic, _connection_time)) in active_peers_lock.iter()
+                for (addr, state) in active_peers_lock.iter()
                 {
                     known_peers_lock
                         .entry(addr.clone())
                         .and_modify(|(total_in, total_out)| {
-                            *total_in += in_traffic;
-                            *total_out += out_traffic;
+                            *total_in += state.inbound_traffic;
+                            *total_out += state.outbound_traffic;
                         })
-                        .or_insert((*in_traffic, *out_traffic));
+                        .or_insert((state.inbound_traffic, state.outbound_traffic));
                 }
                 break; // Exit the network loop.
             }
@@ -352,7 +352,7 @@ async fn main() -> Result<()> {
             // Spawn a thread for each connection attempt.
             std::thread::spawn(move || {
                 // Attempt to connect and handshake with a peer.
-                let conn_result: Result<(TcpStream, String, Vec<String>), anyhow::Error> =
+                let conn_result: Result<(TcpStream, String, Vec<String>, i32, String), anyhow::Error> =
                     connect_and_handshake(
                         DNS_SEEDS, /* DNS seeds used for initial discovery and potentially
                                     * during handshake. */
@@ -362,10 +362,16 @@ async fn main() -> Result<()> {
                         target_peer_addr_for_thread,
                     );
                 // Process the connection result.
-                if let Ok((_, peer_addr, new_peers)) = &conn_result {
+                if let Ok((_, peer_addr, new_peers, version, ua)) = &conn_result {
                     let mut active_peers_lock = active_peers_clone_for_conn.lock().unwrap();
                     // Add the successfully connected peer to the active peers list.
-                    active_peers_lock.insert(peer_addr.clone(), (0, 0, SystemTime::now())); // Initialize session traffic to 0 and set connection time.
+                    active_peers_lock.insert(peer_addr.clone(), ActivePeerState {
+                        inbound_traffic: 0,
+                        outbound_traffic: 0,
+                        connection_time: SystemTime::now(),
+                        protocol_version: *version,
+                        user_agent: ua.clone(),
+                    }); // Initialize session traffic to 0 and set connection time.
 
                     // Ensure the peer is also in the known_peers cache.
                     let mut known_peers_lock = known_peers_clone_for_conn.lock().unwrap();
@@ -393,9 +399,9 @@ async fn main() -> Result<()> {
             });
 
             // Receive the connection result with a timeout.
-            let stream_result: Result<(TcpStream, String, Vec<String>), anyhow::Error> =
+            let stream_result: Result<(TcpStream, String, Vec<String>, i32, String), anyhow::Error> =
                 match rx_conn.recv_timeout(Duration::from_secs(10)) {
-                    Ok(Ok((stream, peer_addr, new_peers))) => Ok((stream, peer_addr, new_peers)),
+                    Ok(Ok((stream, peer_addr, new_peers, version, ua))) => Ok((stream, peer_addr, new_peers, version, ua)),
                     Ok(Err(e)) => {
                         add_message(format!(
                             "[ERROR] Failed to connect and handshake: {}. Trying next peer...",
@@ -439,7 +445,7 @@ async fn main() -> Result<()> {
                 };
 
             // If a connection was successfully established and handshake completed:
-            if let Ok((mut stream, connected_peer_addr, _)) = stream_result {
+            if let Ok((mut stream, connected_peer_addr, _, _, _)) = stream_result {
                 // Clone shared state for the peer-specific thread.
                 let active_peers_clone_for_peer_thread = Arc::clone(&active_peers_network);
                 let known_peers_clone_for_peer_thread = Arc::clone(&known_peers_network);
@@ -497,11 +503,11 @@ async fn main() -> Result<()> {
                         if last_traffic_update.elapsed() >= Duration::from_secs(1) {
                             let mut active_peers_lock =
                                 active_peers_clone_for_peer_thread.lock().unwrap();
-                            if let Some(peer_entry) =
+                            if let Some(state) =
                                 active_peers_lock.get_mut(&peer_addr_for_peer_thread)
                             {
-                                peer_entry.0 = session_inbound_traffic; // Update session inbound traffic.
-                                peer_entry.1 = session_outbound_traffic; // Update session outbound traffic.
+                                state.inbound_traffic = session_inbound_traffic; // Update session inbound traffic.
+                                state.outbound_traffic = session_outbound_traffic; // Update session outbound traffic.
                                 // Peer connection time (peer_entry.2) remains
                                 // unchanged.
                             }

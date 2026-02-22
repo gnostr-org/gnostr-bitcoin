@@ -24,6 +24,8 @@ use ratatui::{
 };
 use time::{OffsetDateTime, macros::format_description};
 
+use crate::ActivePeerState;
+
 #[rustfmt::skip]
 const BITCOIN_LOGO: [&str; 15] = [
     "⠀⠀⠀⠀⠀⠀⠀⠀⣀⣤⣴⣶⣾⣿⣿⣿⣿⣷⣶⣦⣤⣀⠀⠀⠀⠀⠀⠀⠀⠀",
@@ -115,7 +117,7 @@ pub struct App {
     pub running: Arc<AtomicBool>,
     pub block_height: Arc<Mutex<i32>>,
     pub block_hash: Arc<Mutex<String>>,
-    pub peer_list: Arc<Mutex<HashMap<String, (u64, u64, SystemTime)>>>,
+    pub peer_list: Arc<Mutex<HashMap<String, ActivePeerState>>>,
     pub focused_widget: FocusedWidget,
     last_user_input_time: Instant,
     auto_scroll_enabled: bool,
@@ -139,7 +141,7 @@ impl App {
             messages: Arc<Mutex<Vec<(String, SystemTime)>>>,
             running: Arc<AtomicBool>,
             block_height: Arc<Mutex<i32>>,
-            peer_list: Arc<Mutex<HashMap<String, (u64, u64, SystemTime)>>>,
+            peer_list: Arc<Mutex<HashMap<String, ActivePeerState>>>,
         ) -> App {
             App {
                 messages,
@@ -409,23 +411,28 @@ impl App {
                             f.render_widget(connecting_widget, bottom_half_chunks[1]); // Assuming bottom_half_chunks[1] is correct for the peer list pane
                         } else {
                             // If the list is not empty, render the actual peer list
-                            let mut sorted_peers: Vec<(&String, &(u64, u64, SystemTime))> =
+                            let mut sorted_peers: Vec<(&String, &ActivePeerState)> =
                                 peer_list_lock.iter().collect();
                             sorted_peers.sort_by(|a, b| {
                                 // Sort by inbound traffic (descending)
-                                b.1.0
-                                    .cmp(&a.1.0)
+                                b.1.inbound_traffic
+                                    .cmp(&a.1.inbound_traffic)
                                     // Then by connection time (ascending)
-                                    .then_with(|| a.1.2.cmp(&b.1.2))
+                                    .then_with(|| a.1.connection_time.cmp(&b.1.connection_time))
                             });
 
                             let peer_list_content: Vec<Line> = sorted_peers
                                 .into_iter()
-                                .map(|(peer_addr, bytes_transferred)| {
-                                    Line::from(Span::raw(format!(
-                                        "{} In: {} B, Out: {} B",
-                                        peer_addr, bytes_transferred.0, bytes_transferred.1
-                                    )))
+                                .map(|(peer_addr, state)| {
+                                    Line::from(vec![
+                                        Span::styled(format!("{}: ", peer_addr), Style::default().fg(Color::Cyan)),
+                                        Span::raw(format!("V: {}, UA: {}, In: {} B, Out: {} B", 
+                                            state.protocol_version, 
+                                            state.user_agent,
+                                            state.inbound_traffic, 
+                                            state.outbound_traffic
+                                        )),
+                                    ])
                                 })
                                 .collect();
 

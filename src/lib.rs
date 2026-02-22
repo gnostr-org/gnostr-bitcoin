@@ -20,6 +20,15 @@ pub use p2p::build_getaddr_message;
 pub use p2p::build_getheaders_message;
 pub use p2p::VarIntReader;
 
+#[derive(Debug, Clone)]
+pub struct ActivePeerState {
+    pub inbound_traffic: u64,
+    pub outbound_traffic: u64,
+    pub connection_time: SystemTime,
+    pub protocol_version: i32,
+    pub user_agent: String,
+}
+
 // Re-exports for tor module
 pub use tor::initialize_tor_client;
 pub use tor::establish_tor_stream;
