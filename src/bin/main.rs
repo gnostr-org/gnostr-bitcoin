@@ -18,11 +18,14 @@ use gnostr_bitcoin::ui::{App, init_tui, restore_tui};
 use gnostr_bitcoin::{
     ActivePeerState, DEFAULT_PORT, DNS_SEEDS, build_mempool_message, build_ping_message,
     build_pong_message, connect_and_handshake, init_logger, read_message, send_raw_tx,
-    build_getheaders_message, VarIntReader,
+    build_getheaders_message, VarIntReader, build_getdata_message,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
 use sha2::{Digest, Sha256};
+use bitcoin::p2p::message_blockdata::Inventory;
+use bitcoin::hash_types::BlockHash;
+use bitcoin::hashes::Hash; // for From<[u8; 32]>
 
 /// Maximum number of concurrent peer connections allowed.
 pub const MAX_PEERS: usize = 8;
@@ -169,6 +172,7 @@ async fn main() -> Result<()> {
     let messages = Arc::new(Mutex::new(Vec::<(String, SystemTime)>::new())); // Log messages buffer.
     let block_height = Arc::new(Mutex::new(0)); // Current block height.
     let block_hash = Arc::new(Mutex::new("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f".to_string())); // Current block hash.
+    let local_height = Arc::new(Mutex::new(0)); // Our synced block height.
     let known_peers = Arc::new(Mutex::new(load_peers().unwrap_or_else(|e| {
         error!("Failed to load known peers on startup: {}", e);
         std::collections::HashMap::new()
@@ -208,6 +212,7 @@ async fn main() -> Result<()> {
         let block_height_clone = Arc::clone(&block_height);
         let running_clone = Arc::clone(&running);
         let messages_clone = Arc::clone(&messages);
+        let local_height_val = *local_height.lock().unwrap();
 
         let handle = std::thread::spawn(move || {
             let add_message = |msg: String| {
@@ -227,6 +232,7 @@ async fn main() -> Result<()> {
                 block_height_clone,
                 running_clone,
                 Some(seed_addr.clone()), // Target this specific seed
+                local_height_val,
             );
             if let Ok((_, _, new_peers, _, _)) = conn_result {
                 add_message(format!(
@@ -295,6 +301,7 @@ async fn main() -> Result<()> {
     let running_network = Arc::clone(&running);
     let block_height_network = Arc::clone(&block_height);
     let block_hash_network = Arc::clone(&block_hash);
+    let local_height_network = Arc::clone(&local_height);
     let active_peers_network = Arc::clone(&active_peers);
     let known_peers_network = Arc::clone(&known_peers);
     let discovered_peers_queue_network = Arc::clone(&discovered_peers_queue);
@@ -359,6 +366,7 @@ async fn main() -> Result<()> {
             let messages_clone_for_logging = Arc::clone(&messages_network);
             let discovered_peers_queue_for_conn = Arc::clone(&discovered_peers_queue_network);
             let target_peer_addr_for_thread = target_peer_addr_for_conn_attempt.clone();
+            let local_height_val = *local_height_network.lock().unwrap();
 
             // Spawn a thread for each connection attempt.
             std::thread::spawn(move || {
@@ -371,6 +379,7 @@ async fn main() -> Result<()> {
                         block_height_clone_for_conn,
                         running_network_clone_for_conn,
                         target_peer_addr_for_thread,
+                        local_height_val,
                     );
                 // Process the connection result.
                 if let Ok((_, peer_addr, new_peers, version, ua)) = &conn_result {
@@ -463,6 +472,7 @@ async fn main() -> Result<()> {
                 let messages_clone_for_peer_thread = Arc::clone(&messages_network);
                 let running_network_clone_for_peer_thread = Arc::clone(&running_network);
                 let block_hash_clone_for_peer_thread = Arc::clone(&block_hash_network);
+                let local_height_clone_for_peer_thread = Arc::clone(&local_height_network);
                 let peer_addr_for_peer_thread = connected_peer_addr.clone();
 
                 // Spawn a thread to handle communication with this specific peer.
@@ -662,6 +672,7 @@ async fn main() -> Result<()> {
                                                         add_message_for_peer(format!("[INFO] 'headers' message contains {} headers.", count));
                                                         
                                                         let mut last_header_hash_bytes: Option<[u8; 32]> = None;
+                                                        let mut batch_hashes = Vec::new();
                                                         
                                                         for _ in 0..count {
                                                             if payload.len() < offset + 80 {
@@ -676,6 +687,7 @@ async fn main() -> Result<()> {
                                                             let mut hash_array = [0u8; 32];
                                                             hash_array.copy_from_slice(&hash2);
                                                             last_header_hash_bytes = Some(hash_array);
+                                                            batch_hashes.push(hash_array);
                                                             
                                                             offset += 80;
                                                             
@@ -696,6 +708,12 @@ async fn main() -> Result<()> {
                                                             add_message_for_peer(format!("[INFO] Updating block hash to: {}", hash_str));
                                                             *block_hash_clone_for_peer_thread.lock().unwrap() = hash_str;
 
+                                                            // Update local height
+                                                            let mut height_lock = local_height_clone_for_peer_thread.lock().unwrap();
+                                                            *height_lock += count as i32;
+                                                            add_message_for_peer(format!("[INFO] Synced to height: {}", *height_lock));
+                                                            drop(height_lock);
+
                                                             // If we got max headers (2000), request more
                                                             if count == 2000 {
                                                                 add_message_for_peer("Received 2000 headers, requesting more...".to_string());
@@ -707,6 +725,27 @@ async fn main() -> Result<()> {
                                                                     }
                                                                     Err(e) => {
                                                                         add_message_for_peer(format!("[ERROR] Failed to build getheaders message: {}", e));
+                                                                    }
+                                                                }
+                                                            } else if count > 0 {
+                                                                // Assume tip. Request last 10 blocks.
+                                                                add_message_for_peer("Synced near tip. Requesting last 10 blocks...".to_string());
+                                                                let start_idx = if batch_hashes.len() > 10 { batch_hashes.len() - 10 } else { 0 };
+                                                                let hashes_to_request = &batch_hashes[start_idx..];
+                                                                
+                                                                let inventory: Vec<([u8; 32], u32)> = hashes_to_request.iter().map(|h| (*h, 0x40000002)).collect(); // MSG_WITNESS_BLOCK
+                                                                
+                                                                match build_getdata_message(inventory) {
+                                                                    Ok(getdata_msg) => {
+                                                                        if let Err(e) = stream.write_all(&getdata_msg) {
+                                                                             add_message_for_peer(format!("[ERROR] Failed to send getdata request: {}", e));
+                                                                        } else {
+                                                                            session_outbound_traffic += getdata_msg.len() as u64;
+                                                                            add_message_for_peer("Sent 'getdata' request for blocks.".to_string());
+                                                                        }
+                                                                    }
+                                                                    Err(e) => {
+                                                                        add_message_for_peer(format!("[ERROR] Failed to build getdata message: {}", e));
                                                                     }
                                                                 }
                                                             }

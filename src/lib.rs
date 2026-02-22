@@ -18,6 +18,7 @@ pub use p2p::build_ping_message;
 pub use p2p::build_pong_message;
 pub use p2p::build_getaddr_message;
 pub use p2p::build_getheaders_message;
+pub use p2p::build_getdata_message;
 pub use p2p::VarIntReader;
 
 #[derive(Debug, Clone)]
