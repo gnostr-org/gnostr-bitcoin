@@ -30,10 +30,10 @@ pub const MAX_PEERS: usize = 8;
 const PEERS_FILE_NAME: &str = "peers.json";
 
 const GENESIS_HASH: [u8; 32] = [
-    0x6f, 0x26, 0xce, 0xa8, 0x60, 0x1b, 0x3f, 0x2b,
-    0x17, 0x6c, 0x2a, 0x46, 0xae, 0x63, 0xff, 0x93,
-    0x1e, 0x38, 0x65, 0xae, 0x08, 0x9c, 0x68, 0xd6,
-    0x19, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3, 0x72,
+    0xc1, 0xa6, 0xa2, 0x46, 0xae, 0x63, 0xf7, 0x4f,
+    0x93, 0x1e, 0x83, 0x65, 0xe1, 0x5a, 0x08, 0x9c,
+    0x68, 0xd6, 0x19, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
 #[derive(Parser, Debug)]
@@ -168,7 +168,7 @@ async fn main() -> Result<()> {
     let running = Arc::new(AtomicBool::new(true)); // Flag to signal shutdown.
     let messages = Arc::new(Mutex::new(Vec::<(String, SystemTime)>::new())); // Log messages buffer.
     let block_height = Arc::new(Mutex::new(0)); // Current block height.
-    let block_hash = Arc::new(Mutex::new(String::new())); // Current block hash.
+    let block_hash = Arc::new(Mutex::new("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f".to_string())); // Current block hash.
     let known_peers = Arc::new(Mutex::new(load_peers().unwrap_or_else(|e| {
         error!("Failed to load known peers on startup: {}", e);
         std::collections::HashMap::new()
@@ -565,7 +565,7 @@ async fn main() -> Result<()> {
                                 let command_result = std::str::from_utf8(&header[4..16]);
                                 match command_result {
                                     Ok(command) => {
-                                        let command = command.trim_end_matches('\0');
+                                        let command = command.trim_matches(|c: char| c == '\0' || c == ' ');
                                         let log_msg = format!(
                                             "[RECEIVED] Command: '{}', Payload Size: {} bytes",
                                             command,
