@@ -661,7 +661,7 @@ async fn main() -> Result<()> {
                                                         offset += bytes_read;
                                                         add_message_for_peer(format!("[INFO] 'headers' message contains {} headers.", count));
                                                         
-                                                        let mut last_header_hash: Option<String> = None;
+                                                        let mut last_header_hash_bytes: Option<[u8; 32]> = None;
                                                         
                                                         for _ in 0..count {
                                                             if payload.len() < offset + 80 {
@@ -673,10 +673,9 @@ async fn main() -> Result<()> {
                                                             let hash1 = Sha256::digest(header_bytes);
                                                             let hash2 = Sha256::digest(hash1);
                                                             
-                                                            // Bitcoin hashes are little-endian displayed, so we reverse bytes
-                                                            let mut hash_bytes = hash2.to_vec();
-                                                            hash_bytes.reverse();
-                                                            last_header_hash = Some(hex::encode(hash_bytes));
+                                                            let mut hash_array = [0u8; 32];
+                                                            hash_array.copy_from_slice(&hash2);
+                                                            last_header_hash_bytes = Some(hash_array);
                                                             
                                                             offset += 80;
                                                             
@@ -689,9 +688,28 @@ async fn main() -> Result<()> {
                                                             }
                                                         }
                                                         
-                                                        if let Some(hash) = last_header_hash {
-                                                            add_message_for_peer(format!("[INFO] Updating block hash to: {}", hash));
-                                                            *block_hash_clone_for_peer_thread.lock().unwrap() = hash;
+                                                        if let Some(hash_bytes) = last_header_hash_bytes {
+                                                            let mut display_bytes = hash_bytes.to_vec();
+                                                            display_bytes.reverse();
+                                                            let hash_str = hex::encode(display_bytes);
+                                                            
+                                                            add_message_for_peer(format!("[INFO] Updating block hash to: {}", hash_str));
+                                                            *block_hash_clone_for_peer_thread.lock().unwrap() = hash_str;
+
+                                                            // If we got max headers (2000), request more
+                                                            if count == 2000 {
+                                                                add_message_for_peer("Received 2000 headers, requesting more...".to_string());
+                                                                match build_getheaders_message(vec![hash_bytes], [0u8; 32]) {
+                                                                    Ok(getheaders_msg) => {
+                                                                        if let Err(e) = stream.write_all(&getheaders_msg) {
+                                                                             add_message_for_peer(format!("[ERROR] Failed to send getheaders request: {}", e));
+                                                                        }
+                                                                    }
+                                                                    Err(e) => {
+                                                                        add_message_for_peer(format!("[ERROR] Failed to build getheaders message: {}", e));
+                                                                    }
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                     Err(e) => {
