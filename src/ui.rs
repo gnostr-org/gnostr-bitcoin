@@ -259,6 +259,13 @@ impl App {
 
                     let block_height_value = *self.block_height.lock().unwrap();
                     let block_hash_value = self.block_hash.lock().unwrap();
+                    let user_agent = format!("UA: /Gnostr:{}/", env!("CARGO_PKG_VERSION"));
+                    
+                    let header_chunks = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)].as_ref())
+                        .split(chunks[0]);
+
                     let block_height_widget = Paragraph::new("")
                         .block(
                             Block::default()
@@ -275,7 +282,17 @@ impl App {
                                 }),
                         )
                         .style(Style::default().fg(Color::Cyan));
-                    f.render_widget(block_height_widget, chunks[0]);
+                    f.render_widget(block_height_widget, header_chunks[0]);
+
+                    let ua_widget = Paragraph::new(user_agent)
+                        .block(
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .title("User Agent")
+                                .border_style(Style::default().fg(Color::Green)),
+                        )
+                        .style(Style::default().fg(Color::Green));
+                    f.render_widget(ua_widget, header_chunks[1]);
 
                     let instruction_chunks = Layout::default()
                         .direction(Direction::Horizontal)

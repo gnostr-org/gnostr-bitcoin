@@ -23,9 +23,6 @@ use gnostr_bitcoin::{
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
 use sha2::{Digest, Sha256};
-use bitcoin::p2p::message_blockdata::Inventory;
-use bitcoin::hash_types::BlockHash;
-use bitcoin::hashes::Hash; // for From<[u8; 32]>
 
 /// Maximum number of concurrent peer connections allowed.
 pub const MAX_PEERS: usize = 8;
@@ -57,6 +54,14 @@ struct Cli {
     /// Optional: Hex-encoded raw transaction to blast.
     #[arg(long)]
     tx: Option<String>,
+
+    /// Optional: Specify the data directory
+    #[arg(short, long)]
+    datadir: Option<PathBuf>,
+
+    /// Optional: Listen for incoming connections
+    #[arg(short, long)]
+    listen: bool,
 }
 
 /// Represents information about a connected peer.
@@ -79,10 +84,15 @@ struct PeerInfo {
 
 /// Determines and returns the application data directory path.
 /// Ensures that the directory exists, creating it if necessary.
-fn get_app_data_dir() -> Result<PathBuf> {
-    let mut path = dirs::data_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not determine application data directory"))?;
-    path.push("gnostr-bitcoin");
+fn get_app_data_dir(custom_path: Option<PathBuf>) -> Result<PathBuf> {
+    let path = if let Some(p) = custom_path {
+        p
+    } else {
+        let mut p = dirs::data_dir()
+            .ok_or_else(|| anyhow::anyhow!("Could not determine application data directory"))?;
+        p.push("gnostr-bitcoin");
+        p
+    };
     fs::create_dir_all(&path)?;
     Ok(path)
 }
@@ -90,9 +100,8 @@ fn get_app_data_dir() -> Result<PathBuf> {
 /// Saves the current list of known peers (with their total traffic) to a JSON
 /// file. This allows for persistent storage of peer data across application
 /// runs.
-fn save_peers(peers: &std::collections::HashMap<String, (u64, u64)>) -> Result<()> {
-    let app_data_dir = get_app_data_dir()?;
-    let peers_file_path = app_data_dir.join(PEERS_FILE_NAME);
+fn save_peers(peers: &std::collections::HashMap<String, (u64, u64)>, data_dir: &std::path::Path) -> Result<()> {
+    let peers_file_path = data_dir.join(PEERS_FILE_NAME);
 
     // Map the HashMap to a Vec<PeerInfo> for serialization.
     let serializable_peers: Vec<PeerInfo> = peers
@@ -116,9 +125,8 @@ fn save_peers(peers: &std::collections::HashMap<String, (u64, u64)>) -> Result<(
 
 /// Loads the list of known peers from a JSON file.
 /// If the file does not exist, it returns an empty HashMap.
-fn load_peers() -> Result<std::collections::HashMap<String, (u64, u64)>> {
-    let app_data_dir = get_app_data_dir()?;
-    let peers_file_path = app_data_dir.join(PEERS_FILE_NAME);
+fn load_peers(data_dir: &std::path::Path) -> Result<std::collections::HashMap<String, (u64, u64)>> {
+    let peers_file_path = data_dir.join(PEERS_FILE_NAME);
 
     if !peers_file_path.exists() {
         info!(
@@ -150,8 +158,13 @@ async fn main() -> Result<()> {
     let target_peer_addr = cli.target_peer_addr;
     let send_raw_tx_enabled = cli.sendrawtx;
     let tx_hex_string = cli.tx;
+    let custom_datadir = cli.datadir;
+    let listen_enabled = cli.listen;
+
+    let data_dir = get_app_data_dir(custom_datadir)?;
 
     debug!("Send raw transaction enabled: {}", send_raw_tx_enabled);
+    debug!("Listen enabled: {}", listen_enabled);
 
     if send_raw_tx_enabled {
         if let Some(tx_hex) = tx_hex_string {
@@ -173,7 +186,7 @@ async fn main() -> Result<()> {
     let block_height = Arc::new(Mutex::new(0)); // Current block height.
     let block_hash = Arc::new(Mutex::new("000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f".to_string())); // Current block hash.
     let local_height = Arc::new(Mutex::new(0)); // Our synced block height.
-    let known_peers = Arc::new(Mutex::new(load_peers().unwrap_or_else(|e| {
+    let known_peers = Arc::new(Mutex::new(load_peers(&data_dir).unwrap_or_else(|e| {
         error!("Failed to load known peers on startup: {}", e);
         std::collections::HashMap::new()
     }))); // Cache of known peers and their traffic.
@@ -285,12 +298,13 @@ async fn main() -> Result<()> {
     // Setup Ctrl-C handler for graceful shutdown.
     let r_ctrlc = running.clone();
     let known_peers_for_shutdown_ctrlc = Arc::clone(&known_peers);
+    let data_dir_for_shutdown = data_dir.clone();
 
     ctrlc::set_handler(move || {
         info!("Ctrl-C received. Initiating shutdown...");
         r_ctrlc.store(false, Ordering::SeqCst); // Signal running flag to false.
         // Attempt to save peer data before exiting.
-        if let Err(e) = save_peers(&known_peers_for_shutdown_ctrlc.lock().unwrap()) {
+        if let Err(e) = save_peers(&known_peers_for_shutdown_ctrlc.lock().unwrap(), &data_dir_for_shutdown) {
             error!("Failed to save peers on shutdown: {}", e);
         }
     })
@@ -305,6 +319,7 @@ async fn main() -> Result<()> {
     let active_peers_network = Arc::clone(&active_peers);
     let known_peers_network = Arc::clone(&known_peers);
     let discovered_peers_queue_network = Arc::clone(&discovered_peers_queue);
+    let data_dir_network = data_dir.clone();
 
     // Spawn the network thread.
     // This thread manages all P2P connections, message handling, and peer
@@ -473,6 +488,7 @@ async fn main() -> Result<()> {
                 let running_network_clone_for_peer_thread = Arc::clone(&running_network);
                 let block_hash_clone_for_peer_thread = Arc::clone(&block_hash_network);
                 let local_height_clone_for_peer_thread = Arc::clone(&local_height_network);
+                let data_dir_peer = data_dir_network.clone();
                 let peer_addr_for_peer_thread = connected_peer_addr.clone();
 
                 // Spawn a thread to handle communication with this specific peer.
@@ -659,6 +675,29 @@ async fn main() -> Result<()> {
                                                 add_message_for_peer(
                                                     "[INFO] Received 'block' message.".to_string(),
                                                 );
+                                                // Save block to disk
+                                                // Calculate hash to name the file
+                                                // Block header is first 80 bytes.
+                                                if payload.len() >= 80 {
+                                                    let header = &payload[0..80];
+                                                    let hash1 = Sha256::digest(header);
+                                                    let hash2 = Sha256::digest(hash1);
+                                                    let mut hash_bytes = hash2.to_vec();
+                                                    hash_bytes.reverse();
+                                                    let hash_str = hex::encode(hash_bytes);
+                                                    
+                                                    let blocks_dir = data_dir_peer.join("blocks");
+                                                    if let Err(e) = fs::create_dir_all(&blocks_dir) {
+                                                        add_message_for_peer(format!("[ERROR] Failed to create blocks dir: {}", e));
+                                                    } else {
+                                                        let file_path = blocks_dir.join(format!("block_{}.dat", hash_str));
+                                                        if let Err(e) = fs::write(&file_path, &payload) {
+                                                            add_message_for_peer(format!("[ERROR] Failed to write block to disk: {}", e));
+                                                        } else {
+                                                            add_message_for_peer(format!("[SUCCESS] Saved block to {:?}", file_path));
+                                                        }
+                                                    }
+                                                }
                                             }
                                             "headers" => {
                                                 add_message_for_peer(
