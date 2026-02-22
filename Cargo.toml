@@ -30,6 +30,7 @@ crossterm = "0.27.0"
 #crossterm = "0.28.1"
 ctrlc = { version = "3.4.4", features = ["termination"] }
 data-encoding = "2.9.0"
+directories = "5.0.1"
 dirs = "5.0.0"
 futures = "0.3.31"
 hex = "0.4"
