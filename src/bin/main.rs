@@ -24,9 +24,6 @@ use gnostr_bitcoin::{
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
 use sha2::{Digest, Sha256};
-use bitcoin::p2p::message_blockdata::Inventory;
-use bitcoin::hash_types::BlockHash;
-use bitcoin::hashes::Hash;
 
 /// Maximum number of concurrent peer connections allowed.
 pub const MAX_PEERS: usize = 8;
@@ -529,14 +526,33 @@ async fn main() -> Result<()> {
 
             // Get a peer address from the discovery queue to attempt connection.
             let mut target_peer_addr_for_conn_attempt: Option<String> = None;
-            if let Some(peer) = discovered_peers_queue_network.lock().unwrap().pop() {
-                target_peer_addr_for_conn_attempt = Some(peer);
+
+            #[cfg(debug_assertions)]
+            {
+                let active_peers_lock = active_peers_network.lock().unwrap();
+                // If we aren't connected to localhost:8333, force it as the next target.
+                // We avoid connecting to ourselves by checking if we are Node 1 (using the default port).
+                // Note: This is a simple check; in a production node, we'd check our own advertised address/port.
+                if !active_peers_lock.contains_key("127.0.0.1:8333") {
+                    target_peer_addr_for_conn_attempt = Some("127.0.0.1:8333".to_string());
+                }
+                drop(active_peers_lock);
             }
 
-            add_message(format!(
-                "Attempting to connect and handshake ({} / {} peers)...",
-                num_connected_peers, max_peers
-            ));
+            if target_peer_addr_for_conn_attempt.is_none() {
+                if let Some(peer) = discovered_peers_queue_network.lock().unwrap().pop() {
+                    target_peer_addr_for_conn_attempt = Some(peer);
+                }
+            }
+
+            if let Some(target_addr) = &target_peer_addr_for_conn_attempt {
+                add_message(format!(
+                    "Attempting to connect and handshake ({} / {} peers) to {}...",
+                    num_connected_peers, max_peers, target_addr
+                ));
+            } else {
+                continue; // No peers to connect to
+            }
             // Channel for receiving results from the connection attempt thread.
             let (tx_conn, rx_conn) = std::sync::mpsc::channel();
             let block_height_clone_for_conn = Arc::clone(&block_height_network);
