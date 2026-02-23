@@ -6,6 +6,7 @@ repository = "https://github.com/gnostr-org/gnostr-bitcoin.git"
 description = "gnostr: a git+nostr workflow utility."
 homepage = "https://github.com/gnostr-org/gnostr-bitcoin"
 authors = ["gnostr admin@gnostr.org"]
+default-run = "gnostr-bitcoin"
 
 [package.metadata.wix]
 upgrade-guid = "ACDBED36-EF11-48AF-9C23-1CD76EC60D69"
