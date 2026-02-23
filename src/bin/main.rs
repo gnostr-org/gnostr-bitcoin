@@ -91,12 +91,15 @@ struct PeerInfo {
 fn get_app_data_dir(custom_path: Option<PathBuf>) -> Result<PathBuf> {
     let path = if let Some(p) = custom_path {
         p
-    } else if let Some(proj_dirs) = ProjectDirs::from("org", "gnostr", "gnostr-bitcoin") {
-        proj_dirs.data_dir().to_path_buf()
+    } else if let Some(proj_dirs) = ProjectDirs::from("org", "gnostr", "gnostr") {
+        let mut p = proj_dirs.data_dir().to_path_buf();
+        p.push("bitcoin");
+        p
     } else {
         let mut p = dirs::data_dir()
             .ok_or_else(|| anyhow::anyhow!("Could not determine application data directory"))?;
-        p.push("gnostr-bitcoin");
+        p.push("gnostr");
+        p.push("bitcoin");
         p
     };
     fs::create_dir_all(&path)?;
