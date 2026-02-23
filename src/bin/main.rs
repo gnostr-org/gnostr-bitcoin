@@ -205,6 +205,20 @@ fn spawn_peer_handler(
                                     }
                                 }
                             }
+                            "feefilter" => {
+                                if payload.len() >= 8 {
+                                    let feerate_bytes: [u8; 8] = payload[0..8].try_into().unwrap();
+                                    let feerate = u64::from_le_bytes(feerate_bytes);
+                                    add_message_for_peer(format!("[INFO] Received 'feefilter' message: {} sat/kB.", feerate));
+                                    // Update peer's fee filter in active_peers
+                                    if let Some(state) = active_peers.lock().unwrap().get_mut(&peer_addr) {
+                                        state.fee_filter = feerate;
+                                        add_message_for_peer(format!("[DEBUG] Updated {} fee filter to {} sat/kB.", peer_addr, feerate));
+                                    }
+                                } else {
+                                    add_message_for_peer("[ERROR] Received malformed 'feefilter' message.".to_string());
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -339,15 +353,16 @@ async fn main() -> Result<()> {
                 seed_addr
             ));
             // Attempt to connect and handshake with the DNS seed.
-            let conn_result = connect_and_handshake(
-                DNS_SEEDS, // Pass DNS_SEEDS for potential peer discovery during handshake
-                DEFAULT_PORT,
-                block_height_clone,
-                running_clone,
-                Some(seed_addr.clone()), // Target this specific seed
-                local_height_val,
-            );
-            if let Ok((_, _, new_peers, _, _)) = conn_result {
+            let conn_result: Result<(TcpStream, String, Vec<String>, i32, String, u64), anyhow::Error> =
+                connect_and_handshake(
+                    DNS_SEEDS, // Pass DNS_SEEDS for potential peer discovery during handshake
+                    DEFAULT_PORT,
+                    block_height_clone,
+                    running_clone,
+                    Some(seed_addr.clone()), // Target this specific seed
+                    local_height_val,
+                );
+            if let Ok((_, _, new_peers, _, _, _)) = conn_result {
                 add_message(format!(
                     "Discovered {} new peers from {}.",
                     new_peers.len(),
@@ -448,7 +463,7 @@ async fn main() -> Result<()> {
                     Ok((stream, _addr)) => {
                         let local_height_val = *local_height_listener.lock().unwrap();
                         match accept_and_handshake(stream, local_height_val) {
-                            Ok((stream, peer_addr, _ver, ua)) => {
+                            Ok((stream, peer_addr, _ver, ua, _fee_filter)) => {
                                 messages_listener.lock().unwrap().push((format!("[DEBUG] Peer connected: {} UA: '{}'", peer_addr, ua), SystemTime::now()));
                                 active_peers_listener.lock().unwrap().insert(peer_addr.clone(), ActivePeerState {
                                     inbound_traffic: 0,
@@ -456,6 +471,7 @@ async fn main() -> Result<()> {
                                     connection_time: SystemTime::now(),
                                     protocol_version: _ver,
                                     user_agent: ua.clone(),
+                                    fee_filter: _fee_filter,
                                 });
                                 
                                 if ua.contains("Gnostr") {
@@ -594,7 +610,7 @@ async fn main() -> Result<()> {
             // Spawn a thread for each connection attempt.
             std::thread::spawn(move || {
                 // Attempt to connect and handshake with a peer.
-                let conn_result: Result<(TcpStream, String, Vec<String>, i32, String), anyhow::Error> =
+                let conn_result: Result<(TcpStream, String, Vec<String>, i32, String, u64), anyhow::Error> =
                     connect_and_handshake(
                         DNS_SEEDS, /* DNS seeds used for initial discovery and potentially
                                     * during handshake. */
@@ -605,7 +621,7 @@ async fn main() -> Result<()> {
                         local_height_val,
                     );
                 // Process the connection result.
-                if let Ok((_, peer_addr, new_peers, version, ua)) = &conn_result {
+                if let Ok((_, peer_addr, new_peers, version, ua, _fee_filter)) = &conn_result {
                     let mut active_peers_lock = active_peers_clone_for_conn.lock().unwrap();
                     // Add the successfully connected peer to the active peers list.
                     active_peers_lock.insert(peer_addr.clone(), ActivePeerState {
@@ -614,6 +630,7 @@ async fn main() -> Result<()> {
                         connection_time: SystemTime::now(),
                         protocol_version: *version,
                         user_agent: ua.clone(),
+                        fee_filter: *_fee_filter,
                     }); // Initialize session traffic to 0 and set connection time.
 
                     // Ensure the peer is also in the known_peers cache.
@@ -642,9 +659,9 @@ async fn main() -> Result<()> {
             });
 
             // Receive the connection result with a timeout.
-            let stream_result: Result<(TcpStream, String, Vec<String>, i32, String), anyhow::Error> =
+            let stream_result: Result<(TcpStream, String, Vec<String>, i32, String, u64), anyhow::Error> =
                 match rx_conn.recv_timeout(Duration::from_secs(10)) {
-                    Ok(Ok((stream, peer_addr, new_peers, version, ua))) => Ok((stream, peer_addr, new_peers, version, ua)),
+                    Ok(Ok((stream, peer_addr, new_peers, version, ua, fee_filter))) => Ok((stream, peer_addr, new_peers, version, ua, fee_filter)),
                     Ok(Err(e)) => {
                         add_message(format!(
                             "[ERROR] Failed to connect and handshake: {}. Trying next peer...",
@@ -688,7 +705,7 @@ async fn main() -> Result<()> {
                 };
 
             // If a connection was successfully established and handshake completed:
-            if let Ok((mut stream, connected_peer_addr, _, _, ua)) = stream_result {
+            if let Ok((mut stream, connected_peer_addr, _, _, ua, _fee_filter)) = stream_result {
                 add_message(format!("[DEBUG] Peer connected: {} UA: '{}'", connected_peer_addr, ua));
                 // Check if UA contains "Gnostr" and save to relays.json
                 if ua.contains("Gnostr") {
