@@ -29,6 +29,7 @@ pub struct ActivePeerState {
     pub connection_time: SystemTime,
     pub protocol_version: i32,
     pub user_agent: String,
+    pub fee_filter: u64,
 }
 
 // Re-exports for tor module
