@@ -23,11 +23,21 @@ name = "gnostr-bitcoin"
 path = "src/bin/main.rs"
 
 [dependencies]
-anyhow = "1.0.98"
+
+# We pin unicode-width to the specific version ratatui-image requires
+unicode-width = "=0.2.0"
+# We use the version of vt100 that is compatible with that pin
+vt100 = "0.15.0"
+ratatui = "0.29.0"
+crossterm = "0.27"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1.0"
+
+#anyhow = "1.0.98"
 arti-client = { version = "0.30", features = ["native-tls", "onion-service-client"] }
 bitcoin = { version = "0.32.5", features = ["serde"] }
 clap = { version = "4.5.38", features = ["derive", "env", "cargo"] }
-crossterm = "0.27.0"
+#crossterm = "0.27.0"
 #crossterm = "0.28.1"
 ctrlc = { version = "3.4.4", features = ["termination"] }
 data-encoding = "2.9.0"
@@ -39,7 +49,7 @@ image = "0.25.6"
 log = "0.4.21"
 rand = "0.9.1"
 
-ratatui = "0.26.1"
+#ratatui = "0.26.1"
 
 ratatui-image = "8.0.2"
 #ratatui = "0.29.0"
@@ -50,10 +60,13 @@ sha3 = "0.10.8"
 simplelog = "0.12.2"
 soft_ratatui = "0.1.2"
 time = { version = "0.3", features = ["macros", "formatting"] }
-tokio = { version = "1", features = ["full"] }
+#tokio = { version = "1", features = ["full"] }
 tor-rtcompat = { version = "0.30", features = ["tokio"] }
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"
+
+[patch.crates-io]
+unicode-width = { git = "https://github.com/unicode-rs/unicode-width", tag = "v0.2.0" }
 
 # The profile that 'dist' will build with
 [profile.dist]
