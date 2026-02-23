@@ -177,6 +177,28 @@ fn spawn_peer_handler(
 
         add_message_for_peer("Entering listener message processing loop...".to_string());
 
+        // Send initial feefilter message
+        match build_feefilter_message(10) { // Default feerate 10 sat/kB
+            Ok(msg) => {
+                if stream.write_all(&msg).is_ok() {
+                    session_outbound_traffic += msg.len() as u64;
+                    add_message_for_peer("Sent 'feefilter' message (10 sat/kB).".to_string());
+                }
+            }
+            Err(e) => add_message_for_peer(format!("[ERROR] Error building feefilter msg: {}", e)),
+        }
+
+        // Send initial sendcmpct message
+        match build_sendcmpct_message(1, 2) { // High-bandwidth mode, version 2 (BIP152)
+            Ok(msg) => {
+                if stream.write_all(&msg).is_ok() {
+                    session_outbound_traffic += msg.len() as u64;
+                    add_message_for_peer("Sent 'sendcmpct' message (high-bandwidth, version 2).".to_string());
+                }
+            }
+            Err(e) => add_message_for_peer(format!("[ERROR] Error building sendcmpct msg: {}", e)),
+        }
+
         loop {
             if !running.load(Ordering::SeqCst) { break; }
 
@@ -217,6 +239,16 @@ fn spawn_peer_handler(
                                     }
                                 } else {
                                     add_message_for_peer("[ERROR] Received malformed 'feefilter' message.".to_string());
+                                }
+                            }
+                            "sendcmpct" => {
+                                if payload.len() >= 9 {
+                                    let high_bandwidth_mode = payload[0];
+                                    let version_bytes: [u8; 8] = payload[1..9].try_into().unwrap();
+                                    let version = u64::from_le_bytes(version_bytes);
+                                    add_message_for_peer(format!("[INFO] Received 'sendcmpct' message: high_bandwidth_mode={}, version={}.", high_bandwidth_mode, version));
+                                } else {
+                                    add_message_for_peer("[ERROR] Received malformed 'sendcmpct' message.".to_string());
                                 }
                             }
                             _ => {}
