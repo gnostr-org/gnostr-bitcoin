@@ -23,10 +23,11 @@ struct TuiNode {
 }
 
 impl TuiNode {
-    fn new(name: &str, width: u16, height: u16) -> Self {
+    fn new(name: &str) -> Self {
+        // Defaulting to a standard size; we resize dynamically during the draw call
         Self {
             name: name.to_string(),
-            parser: Arc::new(Mutex::new(Parser::new(height, width, 100))),
+            parser: Arc::new(Mutex::new(Parser::new(24, 80, 100))),
         }
     }
 
@@ -36,8 +37,7 @@ impl TuiNode {
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            // Force child to treat the pipe as a color-capable terminal
-            .env("TERM", "xterm-256color") 
+            .env("TERM", "xterm-256color")
             .env("COLORTERM", "truecolor")
             .spawn()?;
 
@@ -55,6 +55,13 @@ impl TuiNode {
 
         Ok(child)
     }
+
+    fn resize(&self, width: u16, height: u16) {
+        let mut p = self.parser.lock().unwrap();
+        if p.screen().size() != (height, width) {
+            p.set_size(height, width);
+        }
+    }
 }
 
 #[tokio::main]
@@ -64,12 +71,10 @@ async fn main() -> anyhow::Result<()> {
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
-    // IMPORTANT: Match internal resolution to the approximate quadrant size
+    // We only need 2 nodes for a 1-over-1 stack
     let nodes = vec![
-        TuiNode::new("Node 1 (Hub)", 120, 40),
-        TuiNode::new("Node 2", 120, 40),
-        TuiNode::new("Node 3", 120, 40),
-        TuiNode::new("Node 4", 120, 40),
+        TuiNode::new("Node 1 (Hub)"),
+        TuiNode::new("Node 2 (Peer)"),
     ];
 
     let mut children = Vec::new();
@@ -80,67 +85,67 @@ async fn main() -> anyhow::Result<()> {
         children.push(node.spawn(args).await?);
     }
 
+    let tick_rate = Duration::from_millis(33);
+    let mut last_tick = Instant::now();
+
     loop {
         terminal.draw(|f| {
+            // Layout: Vertical Stack (1 over 1)
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Length(3), Constraint::Min(0), Constraint::Length(1)])
+                .constraints([
+                    Constraint::Percentage(50),
+                    Constraint::Percentage(50),
+                ])
                 .split(f.area());
 
-            let rows = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(chunks[1]);
+            for (idx, area) in chunks.iter().enumerate() {
+                // Ensure the virtual terminal size matches the UI chunk (minus borders)
+                nodes[idx].resize(area.width - 2, area.height - 2);
 
-            for (r_idx, row_area) in rows.iter().enumerate() {
-                let cols = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                    .split(*row_area);
+                let p = nodes[idx].parser.lock().unwrap();
+                let screen = p.screen();
+                let mut lines = Vec::new();
 
-                for (c_idx, col_area) in cols.iter().enumerate() {
-                    let idx = r_idx * 2 + c_idx;
-                    let p = nodes[idx].parser.lock().unwrap();
-                    let screen = p.screen();
-                    
-                    let mut lines = Vec::new();
-                    for row in 0..screen.size().0 {
-                        let mut spans = Vec::new();
-                        for col in 0..screen.size().1 {
-                            if let Some(cell) = screen.cell(row, col) {
-                                let style = Style::default()
-                                    .fg(match cell.fgcolor() {
-                                        vt100::Color::Default => Color::Reset,
-                                        vt100::Color::Idx(i) => Color::Indexed(i),
-                                        vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
-                                    })
-                                    .bg(match cell.bgcolor() {
-                                        vt100::Color::Default => Color::Reset,
-                                        vt100::Color::Idx(i) => Color::Indexed(i),
-                                        vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
-                                    });
-                                spans.push(Span::styled(cell.contents().to_string(), style));
-                            }
+                for row in 0..screen.size().0 {
+                    let mut spans = Vec::new();
+                    for col in 0..screen.size().1 {
+                        if let Some(cell) = screen.cell(row, col) {
+                            let style = Style::default()
+                                .fg(match cell.fgcolor() {
+                                    vt100::Color::Default => Color::Reset,
+                                    vt100::Color::Idx(i) => Color::Indexed(i),
+                                    vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+                                })
+                                .bg(match cell.bgcolor() {
+                                    vt100::Color::Default => Color::Reset,
+                                    vt100::Color::Idx(i) => Color::Indexed(i),
+                                    vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+                                });
+                            spans.push(Span::styled(cell.contents().to_string(), style));
                         }
-                        lines.push(Line::from(spans));
                     }
-
-                    f.render_widget(
-                        Paragraph::new(lines)
-                            .block(Block::default().title(nodes[idx].name.as_str()).borders(Borders::ALL)),
-                        *col_area,
-                    );
+                    lines.push(Line::from(spans));
                 }
+
+                f.render_widget(
+                    Paragraph::new(lines)
+                        .block(Block::default().title(nodes[idx].name.as_str()).borders(Borders::ALL)),
+                    *area,
+                );
             }
         })?;
 
-        if event::poll(Duration::from_millis(33))? {
+        let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+        if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 if key.code == KeyCode::Char('q') { break; }
             }
         }
+        if last_tick.elapsed() >= tick_rate { last_tick = Instant::now(); }
     }
 
+    // Cleanup
     for mut child in children { let _ = child.kill().await; }
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
