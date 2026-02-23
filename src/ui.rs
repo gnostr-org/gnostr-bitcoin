@@ -10,7 +10,7 @@ use std::{
 };
 
 use crossterm::{
-    event::{self, Event as CEvent, KeyCode},
+    event::{self, Event as CEvent, KeyCode, KeyEventKind},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -202,13 +202,14 @@ impl App {
                     .checked_sub(last_tick.elapsed())
                     .unwrap_or_else(|| Duration::from_secs(0));
 
-                if event::poll(timeout).expect("poll works")
-                    && let CEvent::Key(key) = event::read().expect("can read events") {
-                        tx.send(Event::Input(key)).expect("can send events");
+                if event::poll(timeout).unwrap_or(false) {
+                    if let Ok(CEvent::Key(key)) = event::read() {
+                        tx.send(Event::Input(key)).ok();
                     }
+                }
 
                 if last_tick.elapsed() >= tick_rate {
-                    tx.send(Event::Tick).expect("can send tick event");
+                    tx.send(Event::Tick).ok();
                     last_tick = Instant::now();
                 }
             }
@@ -216,6 +217,7 @@ impl App {
 
         while self.running.load(Ordering::SeqCst) {
             terminal.draw(|f| {
+                // ... (rendering logic)
                 // Check if it's the first start and no peers are connected, and splash screen
                 // hasn't been shown yet
                 if !self.splash_screen_shown && self.peer_list.lock().unwrap().is_empty() {
@@ -551,13 +553,16 @@ impl App {
                                                                                                                         }
                                                                                                                     })?;
                                                                                                         
-                                                                                                                    match rx.recv_timeout(tick_rate) {                Ok(Event::Input(event)) => {
+                                                                                                                    match rx.recv_timeout(tick_rate) {
+                Ok(Event::Input(event)) => {
                     self.last_user_input_time = Instant::now(); // Update timer on any input
-                    match event.code {
-                        KeyCode::Char('q') => {
-                            self.running.store(false, Ordering::SeqCst);
-                        }
-                        KeyCode::Tab => {
+                    
+                    if event.kind == KeyEventKind::Press {
+                        match event.code {
+                            KeyCode::Char('q') | KeyCode::Char('Q') if self.focused_widget != FocusedWidget::Input => {
+                                self.running.store(false, Ordering::SeqCst);
+                            }
+                            KeyCode::Tab => {
                             if let FocusedWidget::Input = self.focused_widget {
                                 if !self.current_suggestions.is_empty() {
                                     let next_index = match self.selected_suggestion_index {
@@ -722,6 +727,7 @@ impl App {
                             }
                         }
                         _ => {}
+                    }
                     }
                 }
                 Ok(Event::Tick) => {

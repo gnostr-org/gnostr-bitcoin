@@ -86,6 +86,7 @@ pub const DNS_SEEDS: &[&str] = &[
     "seed.mainnet.achownodes.xyz",
 ];
 use std::path::PathBuf;
+use directories::ProjectDirs;
 
 /// Initializes the logging system.
 /// Creates a log directory if it doesn't exist and sets up a logger that writes
@@ -93,6 +94,10 @@ use std::path::PathBuf;
 pub fn init_logger(data_dir: Option<PathBuf>) -> Result<()> {
     let log_dir = if let Some(dir) = data_dir {
         dir
+    } else if let Some(proj_dirs) = ProjectDirs::from("org", "gnostr", "gnostr") {
+        let mut p = proj_dirs.data_dir().to_path_buf();
+        p.push("bitcoin");
+        p
     } else {
         let home_dir =
             dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
