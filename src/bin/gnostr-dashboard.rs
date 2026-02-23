@@ -86,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
         terminal.draw(|f| {
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+                .constraints([Constraint::Percentage(48), Constraint::Percentage(48)])
                 .split(f.area());
 
             for (idx, area) in chunks.iter().enumerate() {
