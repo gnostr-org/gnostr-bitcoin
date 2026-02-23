@@ -1,7 +1,7 @@
 use std::{
     fs,
     io::Write,
-    net::TcpStream,
+    net::{TcpStream, TcpListener},
     path::PathBuf,
     sync::{
         Arc, Mutex,
@@ -19,7 +19,7 @@ use gnostr_bitcoin::ui::{App, init_tui, restore_tui};
 use gnostr_bitcoin::{
     ActivePeerState, DEFAULT_PORT, DNS_SEEDS, build_mempool_message, build_ping_message,
     build_pong_message, connect_and_handshake, init_logger, read_message, send_raw_tx,
-    build_getheaders_message, VarIntReader, build_getdata_message,
+    build_getheaders_message, VarIntReader, build_getdata_message, accept_and_handshake,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
@@ -154,6 +154,72 @@ fn load_peers(data_dir: &std::path::Path) -> Result<std::collections::HashMap<St
         .collect();
     info!("Loaded {} peers.", peers_map.len());
     Ok(peers_map)
+}
+
+fn spawn_peer_handler(
+    mut stream: TcpStream,
+    peer_addr: String,
+    messages: Arc<Mutex<Vec<(String, SystemTime)>>>,
+    running: Arc<AtomicBool>,
+    active_peers: Arc<Mutex<std::collections::HashMap<String, ActivePeerState>>>,
+    known_peers: Arc<Mutex<std::collections::HashMap<String, (u64, u64)>>>,
+    _block_hash: Arc<Mutex<String>>,
+    _local_height: Arc<Mutex<i32>>,
+    _data_dir: PathBuf,
+) {
+    std::thread::spawn(move || {
+        let add_message_for_peer = |msg: String| {
+            messages.lock().unwrap().push((
+                format!("[{}] {}", peer_addr, msg),
+                SystemTime::now(),
+            ));
+        };
+
+        let (mut session_inbound_traffic, mut session_outbound_traffic) = (0, 0);
+        let mut last_traffic_update = Instant::now();
+
+        add_message_for_peer("Entering listener message processing loop...".to_string());
+
+        loop {
+            if !running.load(Ordering::SeqCst) { break; }
+
+            if last_traffic_update.elapsed() >= Duration::from_secs(1) {
+                if let Some(state) = active_peers.lock().unwrap().get_mut(&peer_addr) {
+                    state.inbound_traffic = session_inbound_traffic;
+                    state.outbound_traffic = session_outbound_traffic;
+                }
+                last_traffic_update = Instant::now();
+            }
+
+            stream.set_read_timeout(Some(Duration::from_secs(60))).ok();
+
+            match read_message(&mut stream) {
+                Ok((header, payload)) => {
+                    session_inbound_traffic += (header.len() + payload.len()) as u64;
+                    if let Ok(command) = std::str::from_utf8(&header[4..16]) {
+                        let command = command.trim_matches(|c: char| c == '\0' || c == ' ');
+                        match command {
+                            "ping" => {
+                                if let Ok(nonce) = payload.try_into() {
+                                    if let Ok(pong) = build_pong_message(nonce) {
+                                        if stream.write_all(&pong).is_ok() {
+                                            session_outbound_traffic += pong.len() as u64;
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        
+        active_peers.lock().unwrap().remove(&peer_addr);
+        let mut kp = known_peers.lock().unwrap();
+        kp.entry(peer_addr).and_modify(|(i, o)| { *i += session_inbound_traffic; *o += session_outbound_traffic; }).or_insert((session_inbound_traffic, session_outbound_traffic));
+    });
 }
 
 /// The main function that orchestrates the Bitcoin P2P client.
@@ -331,6 +397,89 @@ async fn main() -> Result<()> {
     let discovered_peers_queue_network = Arc::clone(&discovered_peers_queue);
     let data_dir_network = data_dir.clone();
 
+    if listen_enabled {
+        let active_peers_listener = Arc::clone(&active_peers);
+        let known_peers_listener = Arc::clone(&known_peers);
+        let messages_listener = Arc::clone(&messages);
+        let running_listener = Arc::clone(&running);
+        let block_hash_listener = Arc::clone(&block_hash);
+        let local_height_listener = Arc::clone(&local_height);
+        let data_dir_listener = data_dir.clone();
+        
+        std::thread::spawn(move || {
+            let listener = match TcpListener::bind("0.0.0.0:8333") {
+                Ok(l) => l,
+                Err(e) => {
+                    messages_listener.lock().unwrap().push((format!("[ERROR] Failed to bind to port 8333: {}", e), SystemTime::now()));
+                    return;
+                }
+            };
+            listener.set_nonblocking(true).ok();
+            messages_listener.lock().unwrap().push(("[INFO] Listening on 0.0.0.0:8333".to_string(), SystemTime::now()));
+            
+            loop {
+                if !running_listener.load(Ordering::SeqCst) { break; }
+                
+                match listener.accept() {
+                    Ok((stream, _addr)) => {
+                        let local_height_val = *local_height_listener.lock().unwrap();
+                        match accept_and_handshake(stream, local_height_val) {
+                            Ok((stream, peer_addr, _ver, ua)) => {
+                                active_peers_listener.lock().unwrap().insert(peer_addr.clone(), ActivePeerState {
+                                    inbound_traffic: 0,
+                                    outbound_traffic: 0,
+                                    connection_time: SystemTime::now(),
+                                    protocol_version: _ver,
+                                    user_agent: ua.clone(),
+                                });
+                                
+                                if ua.contains("Gnostr") {
+                                    messages_listener.lock().unwrap().push((format!("[INFO] Gnostr peer detected! UA: {}", ua), SystemTime::now()));
+                                    let relays_file_path = data_dir_listener.join("relays.json");
+                                    let mut relays: Vec<String> = if relays_file_path.exists() {
+                                        match fs::read_to_string(&relays_file_path) {
+                                            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+                                            Err(_) => Vec::new(),
+                                        }
+                                    } else { Vec::new() };
+
+                                    if !relays.contains(&ua) {
+                                        relays.push(ua.clone());
+                                        if let Ok(json) = serde_json::to_string_pretty(&relays) {
+                                            fs::write(relays_file_path, json).ok();
+                                        }
+                                    }
+                                }
+                                
+                                spawn_peer_handler(
+                                    stream,
+                                    peer_addr,
+                                    Arc::clone(&messages_listener),
+                                    Arc::clone(&running_listener),
+                                    Arc::clone(&active_peers_listener),
+                                    Arc::clone(&known_peers_listener),
+                                    Arc::clone(&block_hash_listener),
+                                    Arc::clone(&local_height_listener),
+                                    data_dir_listener.clone(),
+                                );
+                            }
+                            Err(e) => {
+                                messages_listener.lock().unwrap().push((format!("[ERROR] Handshake failed with incoming peer: {}", e), SystemTime::now()));
+                            }
+                        }
+                    }
+                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(100));
+                        continue;
+                    }
+                    Err(e) => {
+                         messages_listener.lock().unwrap().push((format!("[ERROR] Listener accept failed: {}", e), SystemTime::now()));
+                    }
+                }
+            }
+        });
+    }
+
     // Spawn the network thread.
     // This thread manages all P2P connections, message handling, and peer
     // discovery.
@@ -490,7 +639,33 @@ async fn main() -> Result<()> {
                 };
 
             // If a connection was successfully established and handshake completed:
-            if let Ok((mut stream, connected_peer_addr, _, _, _)) = stream_result {
+            if let Ok((mut stream, connected_peer_addr, _, _, ua)) = stream_result {
+                // Check if UA contains "Gnostr" and save to relays.json
+                if ua.contains("Gnostr") {
+                    add_message(format!("[INFO] Gnostr peer detected! UA: {}", ua));
+                    let relays_file_path = data_dir_network.join("relays.json");
+                    
+                    let mut relays: Vec<String> = if relays_file_path.exists() {
+                        match fs::read_to_string(&relays_file_path) {
+                            Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
+                            Err(_) => Vec::new(),
+                        }
+                    } else {
+                        Vec::new()
+                    };
+
+                    if !relays.contains(&ua) {
+                        relays.push(ua.clone());
+                        if let Ok(json) = serde_json::to_string_pretty(&relays) {
+                            if let Err(e) = fs::write(relays_file_path, json) {
+                                add_message(format!("[ERROR] Failed to write to relays.json: {}", e));
+                            } else {
+                                add_message("[INFO] Saved Gnostr UA to relays.json".to_string());
+                            }
+                        }
+                    }
+                }
+
                 // Clone shared state for the peer-specific thread.
                 let active_peers_clone_for_peer_thread = Arc::clone(&active_peers_network);
                 let known_peers_clone_for_peer_thread = Arc::clone(&known_peers_network);

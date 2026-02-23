@@ -10,6 +10,7 @@ pub mod tx_ui;
 
 // Re-exports for p2p module
 pub use p2p::connect_and_handshake;
+pub use p2p::accept_and_handshake;
 pub use p2p::read_message;
 pub use p2p::build_version_message;
 pub use p2p::build_verack_message;
