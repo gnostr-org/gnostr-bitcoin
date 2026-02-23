@@ -434,7 +434,7 @@ async fn main() -> Result<()> {
                                 if ua.contains("Gnostr") {
                                     messages_listener.lock().unwrap().push((format!("[INFO] Gnostr peer detected! UA: {}", ua), SystemTime::now()));
                                     let relays_file_path = data_dir_listener.join("relays.json");
-                                    messages_listener.lock().unwrap().push((format!("[DEBUG] Saving to: {:?}", relays_file_path), SystemTime::now()));
+                                    messages_listener.lock().unwrap().push((format!("[DEBUG] Saving peer address to: {:?}", relays_file_path), SystemTime::now()));
                                     let mut relays: Vec<String> = if relays_file_path.exists() {
                                         match fs::read_to_string(&relays_file_path) {
                                             Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
@@ -442,13 +442,13 @@ async fn main() -> Result<()> {
                                         }
                                     } else { Vec::new() };
 
-                                    if !relays.contains(&ua) {
-                                        relays.push(ua.clone());
+                                    if !relays.contains(&peer_addr) {
+                                        relays.push(peer_addr.clone());
                                         if let Ok(json) = serde_json::to_string_pretty(&relays) {
                                             if let Err(e) = fs::write(&relays_file_path, json) {
                                                 messages_listener.lock().unwrap().push((format!("[ERROR] Failed to write relays.json: {}", e), SystemTime::now()));
                                             } else {
-                                                messages_listener.lock().unwrap().push(("[INFO] Written relays.json".to_string(), SystemTime::now()));
+                                                messages_listener.lock().unwrap().push((format!("[INFO] Saved Gnostr peer {} to relays.json", peer_addr), SystemTime::now()));
                                             }
                                         }
                                     }
@@ -667,7 +667,7 @@ async fn main() -> Result<()> {
                 if ua.contains("Gnostr") {
                     add_message(format!("[INFO] Gnostr peer detected! UA: {}", ua));
                     let relays_file_path = data_dir_network.join("relays.json");
-                    add_message(format!("[DEBUG] Saving to: {:?}", relays_file_path));
+                    add_message(format!("[DEBUG] Saving peer address to: {:?}", relays_file_path));
                     
                     let mut relays: Vec<String> = if relays_file_path.exists() {
                         match fs::read_to_string(&relays_file_path) {
@@ -678,13 +678,13 @@ async fn main() -> Result<()> {
                         Vec::new()
                     };
 
-                    if !relays.contains(&ua) {
-                        relays.push(ua.clone());
+                    if !relays.contains(&connected_peer_addr) {
+                        relays.push(connected_peer_addr.clone());
                         if let Ok(json) = serde_json::to_string_pretty(&relays) {
                             if let Err(e) = fs::write(&relays_file_path, json) {
                                 add_message(format!("[ERROR] Failed to write to relays.json: {}", e));
                             } else {
-                                add_message("[INFO] Saved Gnostr UA to relays.json".to_string());
+                                add_message(format!("[INFO] Saved Gnostr peer {} to relays.json", connected_peer_addr));
                             }
                         }
                     }
