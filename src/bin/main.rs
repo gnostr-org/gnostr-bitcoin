@@ -19,7 +19,7 @@ use gnostr_bitcoin::ui::{App, init_tui, restore_tui};
 use gnostr_bitcoin::{
     ActivePeerState, DEFAULT_PORT, DNS_SEEDS, build_mempool_message, build_ping_message,
     build_pong_message, connect_and_handshake, init_logger, read_message, send_raw_tx,
-    build_getheaders_message, VarIntReader, build_getdata_message, accept_and_handshake,
+    build_getheaders_message, VarIntReader, build_getdata_message, accept_and_handshake, build_feefilter_message, build_sendcmpct_message,
 };
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
