@@ -425,6 +425,7 @@ async fn main() -> Result<()> {
                         let local_height_val = *local_height_listener.lock().unwrap();
                         match accept_and_handshake(stream, local_height_val) {
                             Ok((stream, peer_addr, _ver, ua)) => {
+                                messages_listener.lock().unwrap().push((format!("[DEBUG] Peer connected: {} UA: '{}'", peer_addr, ua), SystemTime::now()));
                                 active_peers_listener.lock().unwrap().insert(peer_addr.clone(), ActivePeerState {
                                     inbound_traffic: 0,
                                     outbound_traffic: 0,
@@ -436,6 +437,7 @@ async fn main() -> Result<()> {
                                 if ua.contains("Gnostr") {
                                     messages_listener.lock().unwrap().push((format!("[INFO] Gnostr peer detected! UA: {}", ua), SystemTime::now()));
                                     let relays_file_path = data_dir_listener.join("relays.json");
+                                    messages_listener.lock().unwrap().push((format!("[DEBUG] Saving to: {:?}", relays_file_path), SystemTime::now()));
                                     let mut relays: Vec<String> = if relays_file_path.exists() {
                                         match fs::read_to_string(&relays_file_path) {
                                             Ok(content) => serde_json::from_str(&content).unwrap_or_default(),
@@ -446,7 +448,11 @@ async fn main() -> Result<()> {
                                     if !relays.contains(&ua) {
                                         relays.push(ua.clone());
                                         if let Ok(json) = serde_json::to_string_pretty(&relays) {
-                                            fs::write(relays_file_path, json).ok();
+                                            if let Err(e) = fs::write(&relays_file_path, json) {
+                                                messages_listener.lock().unwrap().push((format!("[ERROR] Failed to write relays.json: {}", e), SystemTime::now()));
+                                            } else {
+                                                messages_listener.lock().unwrap().push(("[INFO] Written relays.json".to_string(), SystemTime::now()));
+                                            }
                                         }
                                     }
                                 }
@@ -640,10 +646,12 @@ async fn main() -> Result<()> {
 
             // If a connection was successfully established and handshake completed:
             if let Ok((mut stream, connected_peer_addr, _, _, ua)) = stream_result {
+                add_message(format!("[DEBUG] Peer connected: {} UA: '{}'", connected_peer_addr, ua));
                 // Check if UA contains "Gnostr" and save to relays.json
                 if ua.contains("Gnostr") {
                     add_message(format!("[INFO] Gnostr peer detected! UA: {}", ua));
                     let relays_file_path = data_dir_network.join("relays.json");
+                    add_message(format!("[DEBUG] Saving to: {:?}", relays_file_path));
                     
                     let mut relays: Vec<String> = if relays_file_path.exists() {
                         match fs::read_to_string(&relays_file_path) {
@@ -657,7 +665,7 @@ async fn main() -> Result<()> {
                     if !relays.contains(&ua) {
                         relays.push(ua.clone());
                         if let Ok(json) = serde_json::to_string_pretty(&relays) {
-                            if let Err(e) = fs::write(relays_file_path, json) {
+                            if let Err(e) = fs::write(&relays_file_path, json) {
                                 add_message(format!("[ERROR] Failed to write to relays.json: {}", e));
                             } else {
                                 add_message("[INFO] Saved Gnostr UA to relays.json".to_string());
@@ -675,6 +683,7 @@ async fn main() -> Result<()> {
                 let local_height_clone_for_peer_thread = Arc::clone(&local_height_network);
                 let data_dir_peer = data_dir_network.clone();
                 let peer_addr_for_peer_thread = connected_peer_addr.clone();
+                let discovered_peers_queue_peer = Arc::clone(&discovered_peers_queue_network);
 
                 // Spawn a thread to handle communication with this specific peer.
                 std::thread::spawn(move || {
@@ -1077,7 +1086,12 @@ async fn main() -> Result<()> {
                         .or_insert((session_inbound_traffic, session_outbound_traffic));
 
                     let mut active_peers_lock = active_peers_clone_for_peer_thread.lock().unwrap();
-                    active_peers_lock.remove(&peer_addr_for_peer_thread);
+                    if let Some(state) = active_peers_lock.remove(&peer_addr_for_peer_thread) {
+                        if state.user_agent.contains("Gnostr") {
+                            add_message_for_peer("[INFO] Gnostr peer disconnected. Scheduling immediate reconnect.".to_string());
+                            discovered_peers_queue_peer.lock().unwrap().push(peer_addr_for_peer_thread.clone());
+                        }
+                    }
                 });
             } else {
                 // If connection attempt failed, wait a bit before the next attempt.
