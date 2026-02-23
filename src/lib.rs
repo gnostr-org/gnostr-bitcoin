@@ -4,6 +4,7 @@ pub mod tor;
 pub mod send_raw_tx;
 //pub mod widget;
 pub mod tx_ui;
+pub mod network;
 
 // Re-exporting items from submodules to make them accessible at the crate root.
 // This allows users to import them like `gnostr_bitcoin::p2p::connect_and_handshake`.
@@ -60,12 +61,24 @@ use std::io::{Write as IoWrite};
 
 // --- Constants ---
 
+/// Maximum number of concurrent peer connections allowed.
+pub const MAX_PEERS: usize = 8;
+/// Filename for storing peer information persistently.
+pub const PEERS_FILE_NAME: &str = "peers.json";
+/// GENESIS_HASH
+pub const GENESIS_HASH: [u8; 32] = [
+    0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3, 0x72,
+    0xc1, 0xa6, 0xa2, 0x46, 0xae, 0x63, 0xf7, 0x4f,
+    0x93, 0x1e, 0x83, 0x65, 0xe1, 0x5a, 0x08, 0x9c,
+    0x68, 0xd6, 0x19, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+
 /// Magic bytes for the Bitcoin P2P network (Mainnet).
 /// These bytes prefix every valid Bitcoin P2P message.
 pub const MAGIC_BYTES: [u8; 4] = [0xF9, 0xBE, 0xB4, 0xD9]; // Mainnet
 
 /// Default port for the Bitcoin P2P network.
-pub const DEFAULT_PORT: u16 = 8333;
+pub const DEFAULT_PORT: u16 = 6102;
 
 /// Protocol version supported by this client.
 pub const PROTOCOL_VERSION: i32 = 70016;

@@ -16,31 +16,23 @@ use directories::ProjectDirs;
 /// Initializes the logger for the application.
 /// Sets up logging to file and console output.
 use gnostr_bitcoin::ui::{App, init_tui, restore_tui};
+use gnostr_bitcoin::network::peer_handler::spawn_peer_handler;
 use gnostr_bitcoin::{
     ActivePeerState, DEFAULT_PORT, DNS_SEEDS, build_mempool_message, build_ping_message,
     build_pong_message, connect_and_handshake, init_logger, read_message, send_raw_tx,
     build_getheaders_message, VarIntReader, build_getdata_message, accept_and_handshake, build_feefilter_message, build_sendcmpct_message,
+    GENESIS_HASH,
 };
+use gnostr_bitcoin::MAX_PEERS;
+use gnostr_bitcoin::PEERS_FILE_NAME;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
 use sha2::{Digest, Sha256};
 
-/// Maximum number of concurrent peer connections allowed.
-pub const MAX_PEERS: usize = 8;
-/// Filename for storing peer information persistently.
-const PEERS_FILE_NAME: &str = "peers.json";
-
-const GENESIS_HASH: [u8; 32] = [
-    0x6f, 0xe2, 0x8c, 0x0a, 0xb6, 0xf1, 0xb3, 0x72,
-    0xc1, 0xa6, 0xa2, 0x46, 0xae, 0x63, 0xf7, 0x4f,
-    0x93, 0x1e, 0x83, 0x65, 0xe1, 0x5a, 0x08, 0x9c,
-    0x68, 0xd6, 0x19, 0x00, 0x00, 0x00, 0x00, 0x00,
-];
-
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
-    /// Optional: Connect to a specific Bitcoin peer address (e.g., "127.0.0.1:8333")
+    /// Optional: Connect to a specific Bitcoin peer address (e.g., "10.2.0.2:0")
     #[arg(short, long)]
     target_peer_addr: Option<String>,
 
@@ -153,117 +145,7 @@ fn load_peers(data_dir: &std::path::Path) -> Result<std::collections::HashMap<St
     Ok(peers_map)
 }
 
-fn spawn_peer_handler(
-    mut stream: TcpStream,
-    peer_addr: String,
-    messages: Arc<Mutex<Vec<(String, SystemTime)>>>,
-    running: Arc<AtomicBool>,
-    active_peers: Arc<Mutex<std::collections::HashMap<String, ActivePeerState>>>,
-    known_peers: Arc<Mutex<std::collections::HashMap<String, (u64, u64)>>>,
-    _block_hash: Arc<Mutex<String>>,
-    _local_height: Arc<Mutex<i32>>,
-    _data_dir: PathBuf,
-) {
-    std::thread::spawn(move || {
-        let add_message_for_peer = |msg: String| {
-            messages.lock().unwrap().push((
-                format!("[{}] {}", peer_addr, msg),
-                SystemTime::now(),
-            ));
-        };
 
-        let (mut session_inbound_traffic, mut session_outbound_traffic) = (0, 0);
-        let mut last_traffic_update = Instant::now();
-
-        add_message_for_peer("Entering listener message processing loop...".to_string());
-
-        // Send initial feefilter message
-        match build_feefilter_message(10) { // Default feerate 10 sat/kB
-            Ok(msg) => {
-                if stream.write_all(&msg).is_ok() {
-                    session_outbound_traffic += msg.len() as u64;
-                    add_message_for_peer("Sent 'feefilter' message (10 sat/kB).".to_string());
-                }
-            }
-            Err(e) => add_message_for_peer(format!("[ERROR] Error building feefilter msg: {}", e)),
-        }
-
-        // Send initial sendcmpct message
-        match build_sendcmpct_message(1, 2) { // High-bandwidth mode, version 2 (BIP152)
-            Ok(msg) => {
-                if stream.write_all(&msg).is_ok() {
-                    session_outbound_traffic += msg.len() as u64;
-                    add_message_for_peer("Sent 'sendcmpct' message (high-bandwidth, version 2).".to_string());
-                }
-            }
-            Err(e) => add_message_for_peer(format!("[ERROR] Error building sendcmpct msg: {}", e)),
-        }
-
-        loop {
-            if !running.load(Ordering::SeqCst) { break; }
-
-            if last_traffic_update.elapsed() >= Duration::from_secs(1) {
-                if let Some(state) = active_peers.lock().unwrap().get_mut(&peer_addr) {
-                    state.inbound_traffic = session_inbound_traffic;
-                    state.outbound_traffic = session_outbound_traffic;
-                }
-                last_traffic_update = Instant::now();
-            }
-
-            stream.set_read_timeout(Some(Duration::from_secs(60))).ok();
-
-            match read_message(&mut stream) {
-                Ok((header, payload)) => {
-                    session_inbound_traffic += (header.len() + payload.len()) as u64;
-                    if let Ok(command) = std::str::from_utf8(&header[4..16]) {
-                        let command = command.trim_matches(|c: char| c == '\0' || c == ' ');
-                        match command {
-                            "ping" => {
-                                if let Ok(nonce) = payload.try_into() {
-                                    if let Ok(pong) = build_pong_message(nonce) {
-                                        if stream.write_all(&pong).is_ok() {
-                                            session_outbound_traffic += pong.len() as u64;
-                                        }
-                                    }
-                                }
-                            }
-                            "feefilter" => {
-                                if payload.len() >= 8 {
-                                    let feerate_bytes: [u8; 8] = payload[0..8].try_into().unwrap();
-                                    let feerate = u64::from_le_bytes(feerate_bytes);
-                                    add_message_for_peer(format!("[INFO] Received 'feefilter' message: {} sat/kB.", feerate));
-                                    // Update peer's fee filter in active_peers
-                                    if let Some(state) = active_peers.lock().unwrap().get_mut(&peer_addr) {
-                                        state.fee_filter = feerate;
-                                        add_message_for_peer(format!("[DEBUG] Updated {} fee filter to {} sat/kB.", peer_addr, feerate));
-                                    }
-                                } else {
-                                    add_message_for_peer("[ERROR] Received malformed 'feefilter' message.".to_string());
-                                }
-                            }
-                            "sendcmpct" => {
-                                if payload.len() >= 9 {
-                                    let high_bandwidth_mode = payload[0];
-                                    let version_bytes: [u8; 8] = payload[1..9].try_into().unwrap();
-                                    let version = u64::from_le_bytes(version_bytes);
-                                    add_message_for_peer(format!("[INFO] Received 'sendcmpct' message: high_bandwidth_mode={}, version={}.", high_bandwidth_mode, version));
-                                } else {
-                                    add_message_for_peer("[ERROR] Received malformed 'sendcmpct' message.".to_string());
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                Err(_) => break,
-            }
-        }
-        
-        active_peers.lock().unwrap().remove(&peer_addr);
-        let mut kp = known_peers.lock().unwrap();
-        kp.entry(peer_addr).and_modify(|(i, o)| { *i += session_inbound_traffic; *o += session_outbound_traffic; }).or_insert((session_inbound_traffic, session_outbound_traffic));
-    });
-}
 
 /// The main function that orchestrates the Bitcoin P2P client.
 /// Initializes logging, TUI, and starts network and UI threads.
@@ -478,15 +360,15 @@ async fn main() -> Result<()> {
         let data_dir_listener = data_dir.clone();
         
         std::thread::spawn(move || {
-            let listener = match TcpListener::bind("0.0.0.0:8333") {
+            let listener = match TcpListener::bind("10.2.0.2:0") {
                 Ok(l) => l,
                 Err(e) => {
-                    messages_listener.lock().unwrap().push((format!("[ERROR] Failed to bind to port 8333: {}", e), SystemTime::now()));
+                    messages_listener.lock().unwrap().push((format!("[ERROR] Failed to bind to port 0: {}", e), SystemTime::now()));
                     return;
                 }
             };
             listener.set_nonblocking(true).ok();
-            messages_listener.lock().unwrap().push(("[INFO] Listening on 0.0.0.0:8333".to_string(), SystemTime::now()));
+            messages_listener.lock().unwrap().push(("[INFO] Listening on 10.2.0.2:0".to_string(), SystemTime::now()));
             
             loop {
                 if !running_listener.load(Ordering::SeqCst) { break; }
@@ -529,7 +411,7 @@ async fn main() -> Result<()> {
                                     }
                                 }
                                 
-                                spawn_peer_handler(
+                                gnostr_bitcoin::network::peer_handler::spawn_peer_handler(
                                     stream,
                                     peer_addr,
                                     Arc::clone(&messages_listener),
@@ -539,6 +421,8 @@ async fn main() -> Result<()> {
                                     Arc::clone(&block_hash_listener),
                                     Arc::clone(&local_height_listener),
                                     data_dir_listener.clone(),
+                                    _fee_filter,
+                                    //Arc::clone(&discovered_peers_queue_listener),
                                 );
                             }
                             Err(e) => {
@@ -605,11 +489,11 @@ async fn main() -> Result<()> {
             #[cfg(debug_assertions)]
             {
                 let active_peers_lock = active_peers_network.lock().unwrap();
-                // If we aren't connected to localhost:8333, force it as the next target.
+                // If we aren't connected to 10.2.0.2:0, force it as the next target.
                 // We avoid connecting to ourselves by checking if we are Node 1 (using the default port).
                 // Note: This is a simple check; in a production node, we'd check our own advertised address/port.
-                if !active_peers_lock.contains_key("127.0.0.1:8333") {
-                    target_peer_addr_for_conn_attempt = Some("127.0.0.1:8333".to_string());
+                if !active_peers_lock.contains_key("10.2.0.2:0") {
+                    target_peer_addr_for_conn_attempt = Some("10.2.0.2:0".to_string());
                 }
                 drop(active_peers_lock);
             }
