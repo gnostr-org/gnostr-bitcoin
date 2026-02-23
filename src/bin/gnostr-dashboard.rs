@@ -7,8 +7,9 @@ use crossterm::{
 use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
-    text::Line,
-    widgets::{Block, Borders, Paragraph},
+    style::{Color, Style},
+    text::{Line, Span},
+    widgets::Paragraph,
     Terminal,
 };
 use std::{io, process::Stdio, sync::{Arc, Mutex}, time::{Duration, Instant}};
@@ -16,17 +17,15 @@ use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use vt100::Parser;
 
-struct TuiWrapper {
-    name: String,
+struct TuiNode {
     parser: Arc<Mutex<Parser>>,
 }
 
-impl TuiWrapper {
-    fn new(name: &str, width: u16, height: u16) -> Self {
-        // Fix: Added the missing 3rd argument (scrollback_len)
+impl TuiNode {
+    fn new() -> Self {
+        // Initialize with a standard size; dynamic resizing happens in the loop
         Self {
-            name: name.to_string(),
-            parser: Arc::new(Mutex::new(Parser::new(height, width, 1000))),
+            parser: Arc::new(Mutex::new(Parser::new(24, 80, 100))),
         }
     }
 
@@ -36,7 +35,8 @@ impl TuiWrapper {
             .args(args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .env("TERM", "xterm-256color") 
+            .env("TERM", "xterm-256color")
+            .env("COLORTERM", "truecolor")
             .spawn()?;
 
         let mut stdout = child.stdout.take().unwrap();
@@ -53,6 +53,13 @@ impl TuiWrapper {
 
         Ok(child)
     }
+
+    fn resize(&self, width: u16, height: u16) {
+        let mut p = self.parser.lock().unwrap();
+        if p.screen().size() != (height, width) {
+            p.set_size(height, width);
+        }
+    }
 }
 
 #[tokio::main]
@@ -62,76 +69,62 @@ async fn main() -> anyhow::Result<()> {
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
-    let wrappers = vec![
-        TuiWrapper::new("Node 1 (Primary)", 80, 24),
-        TuiWrapper::new("Node 2", 80, 24),
-        TuiWrapper::new("Node 3", 80, 24),
-        TuiWrapper::new("Node 4", 80, 24),
-    ];
+    let nodes = vec![TuiNode::new(), TuiNode::new()];
 
     let mut children = Vec::new();
-    for (i, w) in wrappers.iter().enumerate() {
+    for (i, node) in nodes.iter().enumerate() {
         let mut args = vec!["--datadir".into(), format!("./test_data_{}", i + 1)];
         if i == 0 { args.push("--listen".into()); }
         else { args.extend(vec!["--target-peer-addr".into(), "127.0.0.1:8333".into()]); }
-        children.push(w.spawn(args).await?);
+        children.push(node.spawn(args).await?);
     }
 
-    let tick_rate = Duration::from_millis(50);
+    let tick_rate = Duration::from_millis(33);
     let mut last_tick = Instant::now();
 
     loop {
         terminal.draw(|f| {
-            // Fix: Changed .size() to .area() per deprecation warning
-            let area = f.area(); 
-            
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Length(3),
-                    Constraint::Min(0),
-                    Constraint::Length(1),
-                ])
-                .split(area);
-
-            let rows = Layout::default()
-                .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                .split(chunks[1]);
+                .split(f.area());
 
-            for (r, row_area) in rows.iter().enumerate() {
-                let cols = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-                    .split(*row_area);
+            for (idx, area) in chunks.iter().enumerate() {
+                // Now resizing to the FULL area width/height since borders are removed
+                nodes[idx].resize(area.width, area.height);
 
-                for (c, col_area) in cols.iter().enumerate() {
-                    let idx = r * 2 + c;
-                    let p = wrappers[idx].parser.lock().unwrap();
-                    let screen = p.screen();
-                    
-                    let mut lines = Vec::new();
-                    // Map virtual terminal rows to Ratatui Lines
-                    for row in 0..screen.size().0 {
-                        let mut line_content = String::new();
-                        for col in 0..screen.size().1 {
-                            if let Some(cell) = screen.cell(row, col) {
-                                line_content.push_str(&cell.contents());
-                            }
+                let p = nodes[idx].parser.lock().unwrap();
+                let screen = p.screen();
+                let mut lines = Vec::new();
+
+                for row in 0..screen.size().0 {
+                    let mut spans = Vec::new();
+                    for col in 0..screen.size().1 {
+                        if let Some(cell) = screen.cell(row, col) {
+                            let style = Style::default()
+                                .fg(match cell.fgcolor() {
+                                    vt100::Color::Default => Color::Reset,
+                                    vt100::Color::Idx(i) => Color::Indexed(i),
+                                    vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+                                })
+                                .bg(match cell.bgcolor() {
+                                    vt100::Color::Default => Color::Reset,
+                                    vt100::Color::Idx(i) => Color::Indexed(i),
+                                    vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+                                });
+                            spans.push(Span::styled(cell.contents().to_string(), style));
                         }
-                        lines.push(Line::from(line_content));
                     }
-
-                    f.render_widget(
-                        Paragraph::new(lines)
-                            .block(Block::default().title(wrappers[idx].name.as_str()).borders(Borders::ALL)),
-                        *col_area,
-                    );
+                    lines.push(Line::from(spans));
                 }
+
+                // Render the paragraph directly into the area with no Block wrapper
+                f.render_widget(Paragraph::new(lines), *area);
             }
         })?;
 
-        if event::poll(tick_rate.saturating_sub(last_tick.elapsed()))? {
+        let timeout = tick_rate.saturating_sub(last_tick.elapsed());
+        if event::poll(timeout)? {
             if let Event::Key(key) = event::read()? {
                 if key.code == KeyCode::Char('q') { break; }
             }
