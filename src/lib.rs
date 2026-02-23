@@ -85,6 +85,7 @@ pub const DNS_SEEDS: &[&str] = &[
     "seed.bitcoin.sipa.be",
     "seed.bitcoin.jonasschnelli.ch",
     "seed.mainnet.achownodes.xyz",
+    "127.0.0.1",
 ];
 use std::path::PathBuf;
 use directories::ProjectDirs;
