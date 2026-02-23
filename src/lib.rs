@@ -85,17 +85,24 @@ pub const DNS_SEEDS: &[&str] = &[
     "seed.bitcoin.jonasschnelli.ch",
     "seed.mainnet.achownodes.xyz",
 ];
+use std::path::PathBuf;
+
 /// Initializes the logging system.
 /// Creates a log directory if it doesn't exist and sets up a logger that writes
 /// to a file.
-pub fn init_logger() -> Result<()> {
-    let home_dir =
-        dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
-    let gnostr_dir = home_dir.join(".gnostr");
-    let bitcoin_dir = gnostr_dir.join("bitcoin");
-    let log_file_path = bitcoin_dir.join("gnostr-bitcoin.log");
+pub fn init_logger(data_dir: Option<PathBuf>) -> Result<()> {
+    let log_dir = if let Some(dir) = data_dir {
+        dir
+    } else {
+        let home_dir =
+            dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Could not find home directory"))?;
+        let gnostr_dir = home_dir.join(".gnostr");
+        gnostr_dir.join("bitcoin")
+    };
+    
+    let log_file_path = log_dir.join("gnostr-bitcoin.log");
 
-    fs::create_dir_all(&bitcoin_dir)?;
+    fs::create_dir_all(&log_dir)?;
 
     CombinedLogger::init(vec![WriteLogger::new(
         LevelFilter::Info,

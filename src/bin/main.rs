@@ -12,6 +12,7 @@ use std::{
 
 use anyhow::Result;
 use clap::Parser;
+use directories::ProjectDirs;
 /// Initializes the logger for the application.
 /// Sets up logging to file and console output.
 use gnostr_bitcoin::ui::{App, init_tui, restore_tui};
@@ -23,6 +24,9 @@ use gnostr_bitcoin::{
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
 use sha2::{Digest, Sha256};
+use bitcoin::p2p::message_blockdata::Inventory;
+use bitcoin::hash_types::BlockHash;
+use bitcoin::hashes::Hash;
 
 /// Maximum number of concurrent peer connections allowed.
 pub const MAX_PEERS: usize = 8;
@@ -87,6 +91,8 @@ struct PeerInfo {
 fn get_app_data_dir(custom_path: Option<PathBuf>) -> Result<PathBuf> {
     let path = if let Some(p) = custom_path {
         p
+    } else if let Some(proj_dirs) = ProjectDirs::from("org", "gnostr", "gnostr-bitcoin") {
+        proj_dirs.data_dir().to_path_buf()
     } else {
         let mut p = dirs::data_dir()
             .ok_or_else(|| anyhow::anyhow!("Could not determine application data directory"))?;
@@ -151,8 +157,6 @@ fn load_peers(data_dir: &std::path::Path) -> Result<std::collections::HashMap<St
 /// Initializes logging, TUI, and starts network and UI threads.
 #[tokio::main]
 async fn main() -> Result<()> {
-    init_logger()?;
-
     let cli = Cli::parse();
     let max_peers = cli.max_peers;
     let target_peer_addr = cli.target_peer_addr;
@@ -162,9 +166,12 @@ async fn main() -> Result<()> {
     let listen_enabled = cli.listen;
 
     let data_dir = get_app_data_dir(custom_datadir)?;
+    
+    init_logger(Some(data_dir.clone()))?;
 
     debug!("Send raw transaction enabled: {}", send_raw_tx_enabled);
     debug!("Listen enabled: {}", listen_enabled);
+    debug!("Data directory: {:?}", data_dir);
 
     if send_raw_tx_enabled {
         if let Some(tx_hex) = tx_hex_string {
