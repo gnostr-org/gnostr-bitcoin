@@ -271,14 +271,41 @@ async fn main() -> Result<()> {
 
     // Populate discovery queue with initially known peers.
     let mut discovered_peers_queue_lock = discovered_peers_queue.lock().unwrap();
-    for (addr, _) in known_peers.lock().unwrap().iter() {
-        discovered_peers_queue_lock.push(addr.clone());
+    let mut known_peers_lock = known_peers.lock().unwrap();
+
+    // Load Gnostr relays from file and add to queue
+    let relays_file_path = data_dir.join("relays.json");
+    if relays_file_path.exists() {
+        match fs::read_to_string(&relays_file_path) {
+            Ok(content) => {
+                match serde_json::from_str::<Vec<String>>(&content) {
+                    Ok(relays) => {
+                        for peer_addr in relays {
+                            if !discovered_peers_queue_lock.contains(&peer_addr) {
+                                discovered_peers_queue_lock.push(peer_addr.clone());
+                                info!("[INFO] Added Gnostr relay from file to discovery queue: {}", peer_addr);
+                            }
+                            known_peers_lock.entry(peer_addr).or_insert((0, 0)); // Also add to known peers
+                        }
+                    }
+                    Err(e) => error!("[ERROR] Failed to parse relays.json: {}", e),
+                }
+            }
+            Err(e) => error!("[ERROR] Failed to read relays.json: {}", e),
+        }
+    }
+
+    for (addr, _) in known_peers_lock.iter() {
+        if !discovered_peers_queue_lock.contains(addr) {
+            discovered_peers_queue_lock.push(addr.clone());
+        }
     }
     info!(
         "Added {} known peers to discovery queue.",
         discovered_peers_queue_lock.len()
     );
     drop(discovered_peers_queue_lock); // Release the lock.
+    drop(known_peers_lock); // Release lock.
 
     // --- Initial DNS Seed Discovery ---
     // Spawn threads to connect to DNS seeds and gather initial peer information.
