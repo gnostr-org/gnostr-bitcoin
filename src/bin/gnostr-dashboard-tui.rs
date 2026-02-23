@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::Paragraph,
     Terminal,
 };
 use std::{io, process::Stdio, sync::{Arc, Mutex}, time::{Duration, Instant}};
@@ -18,15 +18,13 @@ use tokio::process::Command;
 use vt100::Parser;
 
 struct TuiNode {
-    name: String,
     parser: Arc<Mutex<Parser>>,
 }
 
 impl TuiNode {
-    fn new(name: &str) -> Self {
-        // Defaulting to a standard size; we resize dynamically during the draw call
+    fn new() -> Self {
+        // Initialize with a standard size; dynamic resizing happens in the loop
         Self {
-            name: name.to_string(),
             parser: Arc::new(Mutex::new(Parser::new(24, 80, 100))),
         }
     }
@@ -71,11 +69,7 @@ async fn main() -> anyhow::Result<()> {
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
-    // We only need 2 nodes for a 1-over-1 stack
-    let nodes = vec![
-        TuiNode::new("Node 1 (Hub)"),
-        TuiNode::new("Node 2 (Peer)"),
-    ];
+    let nodes = vec![TuiNode::new(), TuiNode::new()];
 
     let mut children = Vec::new();
     for (i, node) in nodes.iter().enumerate() {
@@ -90,18 +84,14 @@ async fn main() -> anyhow::Result<()> {
 
     loop {
         terminal.draw(|f| {
-            // Layout: Vertical Stack (1 over 1)
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Percentage(50),
-                    Constraint::Percentage(50),
-                ])
+                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
                 .split(f.area());
 
             for (idx, area) in chunks.iter().enumerate() {
-                // Ensure the virtual terminal size matches the UI chunk (minus borders)
-                nodes[idx].resize(area.width - 2, area.height - 2);
+                // Now resizing to the FULL area width/height since borders are removed
+                nodes[idx].resize(area.width, area.height);
 
                 let p = nodes[idx].parser.lock().unwrap();
                 let screen = p.screen();
@@ -128,11 +118,8 @@ async fn main() -> anyhow::Result<()> {
                     lines.push(Line::from(spans));
                 }
 
-                f.render_widget(
-                    Paragraph::new(lines)
-                        .block(Block::default().title(nodes[idx].name.as_str()).borders(Borders::ALL)),
-                    *area,
-                );
+                // Render the paragraph directly into the area with no Block wrapper
+                f.render_widget(Paragraph::new(lines), *area);
             }
         })?;
 
