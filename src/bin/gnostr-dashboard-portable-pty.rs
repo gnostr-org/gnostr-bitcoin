@@ -88,7 +88,7 @@ impl TuiNode {
 async fn main() -> anyhow::Result<()> {
     enable_raw_mode()?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
-    execute!(io::stdout(), EnterAlternateScreen)?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
 
     let nodes = vec![TuiNode::new(80, 24), TuiNode::new(80, 24)];
     let project_root = std::env::current_dir()?;
@@ -100,13 +100,13 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let start_time = Instant::now();
-    let min_splash_duration = Duration::from_secs(3); // PERSISTENCE TIMER
+    let min_splash_duration = Duration::from_secs(3); 
 
     loop {
         terminal.draw(|f| {
             let area = f.area();
             
-            // 1. ALWAYS render the Dashboard content first (Bottom Layer)
+            // 1. DASHBOARD LAYER (Always Rendering)
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
                 .constraints([Constraint::Percentage(48), Constraint::Min(2), Constraint::Percentage(48)])
@@ -129,25 +129,44 @@ async fn main() -> anyhow::Result<()> {
                 f.render_widget(Paragraph::new(lines), chunk);
             }
 
-            // 2. LAYER the Logo on top if nodes aren't ready OR min time hasn't passed
+            // 2. SPLASH OVERLAY (Centered Vertically and Horizontally)
             let nodes_ready = nodes.iter().all(|n| n.ready.load(Ordering::SeqCst));
             let time_passed = start_time.elapsed() > min_splash_duration;
 
             if !nodes_ready || !time_passed {
-                let splash_area = centered_rect(70, 70, area);
-                
-                // Clear the terminal area where the logo will sit so they don't overlap messy-ly
+                // Clear the whole screen area for the splash if you want true persistence
+                // OR just clear the center. Let's clear the center area.
+                let splash_area = centered_rect(80, 80, area);
                 f.render_widget(Clear, splash_area); 
-                
+
+                // VERTICAL SQUEEZE for internal logo placement
+                let inner_layout = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Min(0),          // Flexible spacer top
+                        Constraint::Length(15),      // The Logo height
+                        Constraint::Length(2),       // Gap
+                        Constraint::Length(1),       // Status text
+                        Constraint::Min(0),          // Flexible spacer bottom
+                    ])
+                    .split(splash_area);
+
                 let logo_lines: Vec<Line> = BITCOIN_LOGO.iter()
                     .map(|&l| Line::from(Span::styled(l, Style::default().fg(Color::Rgb(247, 147, 26)))))
                     .collect();
 
+                // Render Logo (Horizontal center is handled by Paragraph::alignment)
                 f.render_widget(
-                    Paragraph::new(logo_lines)
-                        .alignment(Alignment::Center)
-                        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::DarkGray))),
-                    splash_area
+                    Paragraph::new(logo_lines).alignment(Alignment::Center), 
+                    inner_layout[1]
+                );
+
+                // Render Status Text
+                f.render_widget(
+                    Paragraph::new("INITIALIZING GNOSTR-BITCOIN...")
+                        .style(Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD))
+                        .alignment(Alignment::Center),
+                    inner_layout[3]
                 );
             }
         })?;
@@ -160,7 +179,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     Ok(())
 }
 
