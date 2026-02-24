@@ -16,7 +16,7 @@ use ratatui::{
 use std::{
     io::{self, Read},
     path::PathBuf,
-    sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex},
+    sync::{atomic::{AtomicUsize, Ordering}, Arc, Mutex},
     time::{Duration, Instant},
 };
 use vt100::Parser;
@@ -42,7 +42,7 @@ const BITCOIN_LOGO: [&str; 15] = [
 struct TuiNode {
     parser: Arc<Mutex<Parser>>,
     pty_pair: portable_pty::PtyPair,
-    ready: Arc<AtomicBool>,
+    byte_count: Arc<AtomicUsize>, // Count bytes to gauge "real" output
 }
 
 impl TuiNode {
@@ -55,7 +55,7 @@ impl TuiNode {
         Self {
             parser: Arc::new(Mutex::new(Parser::new(height, width, 100))),
             pty_pair,
-            ready: Arc::new(AtomicBool::new(false)),
+            byte_count: Arc::new(AtomicUsize::new(0)),
         }
     }
 
@@ -69,13 +69,14 @@ impl TuiNode {
 
         let mut reader = self.pty_pair.master.try_clone_reader().expect("failed to clone reader");
         let parser = Arc::clone(&self.parser);
-        let ready = Arc::clone(&self.ready);
+        let byte_count = Arc::clone(&self.byte_count);
 
         std::thread::spawn(move || {
             let mut buf = [0u8; 8192];
             while let Ok(n) = reader.read(&mut buf) {
                 if n == 0 { break; }
-                ready.store(true, Ordering::SeqCst);
+                // Accumulate byte count
+                byte_count.fetch_add(n, Ordering::SeqCst);
                 let mut p = parser.lock().unwrap();
                 p.process(&buf[..n]);
             }
@@ -100,73 +101,74 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let start_time = Instant::now();
-    let min_splash_duration = Duration::from_secs(3); 
+    let min_splash_duration = Duration::from_secs(5); // Increased for stability
+    let byte_threshold = 2000; // Require ~2KB of ANSI data before flipping
 
     loop {
         terminal.draw(|f| {
             let area = f.area();
             
-            // 1. DASHBOARD LAYER (Always Rendering)
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([Constraint::Percentage(48), Constraint::Min(2), Constraint::Percentage(48)])
-                .split(area);
+            // LOGIC: All nodes must have surpassed the byte threshold AND the timer must be up
+            let all_ready = nodes.iter().all(|n| n.byte_count.load(Ordering::SeqCst) > byte_threshold) 
+                            && start_time.elapsed() > min_splash_duration;
 
-            for (idx, &chunk_idx) in [0, 2].iter().enumerate() {
-                let chunk = chunks[chunk_idx];
-                let p = nodes[idx].parser.lock().unwrap();
-                let screen = p.screen();
-                let mut lines = Vec::new();
-                for row in 0..screen.size().0 {
-                    let mut spans = Vec::new();
-                    for col in 0..screen.size().1 {
-                        if let Some(cell) = screen.cell(row, col) {
-                            spans.push(Span::raw(cell.contents().to_string()));
+            if all_ready {
+                // --- DASHBOARD LAYER ---
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([Constraint::Percentage(48), Constraint::Min(2), Constraint::Percentage(48)])
+                    .split(area);
+
+                for (idx, &chunk_idx) in [0, 2].iter().enumerate() {
+                    let chunk = chunks[chunk_idx];
+                    let p = nodes[idx].parser.lock().unwrap();
+                    let screen = p.screen();
+                    let mut lines = Vec::new();
+                    for row in 0..screen.size().0 {
+                        let mut spans = Vec::new();
+                        for col in 0..screen.size().1 {
+                            if let Some(cell) = screen.cell(row, col) {
+                                spans.push(Span::raw(cell.contents().to_string()));
+                            }
                         }
+                        lines.push(Line::from(spans));
                     }
-                    lines.push(Line::from(spans));
+                    f.render_widget(Paragraph::new(lines), chunk);
                 }
-                f.render_widget(Paragraph::new(lines), chunk);
-            }
+            } else {
+                // --- PERSISTENT SPLASH LAYER ---
+                f.render_widget(Clear, area);
 
-            // 2. SPLASH OVERLAY (Centered Vertically and Horizontally)
-            let nodes_ready = nodes.iter().all(|n| n.ready.load(Ordering::SeqCst));
-            let time_passed = start_time.elapsed() > min_splash_duration;
-
-            if !nodes_ready || !time_passed {
-                // Clear the whole screen area for the splash if you want true persistence
-                // OR just clear the center. Let's clear the center area.
-                let splash_area = centered_rect(80, 80, area);
-                f.render_widget(Clear, splash_area); 
-
-                // VERTICAL SQUEEZE for internal logo placement
-                let inner_layout = Layout::default()
+                let vertical_chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Min(0),          // Flexible spacer top
-                        Constraint::Length(15),      // The Logo height
-                        Constraint::Length(2),       // Gap
-                        Constraint::Length(1),       // Status text
-                        Constraint::Min(0),          // Flexible spacer bottom
+                        Constraint::Min(0),
+                        Constraint::Length(15),
+                        Constraint::Length(2),
+                        Constraint::Length(1),
+                        Constraint::Min(0),
                     ])
-                    .split(splash_area);
+                    .split(area);
 
                 let logo_lines: Vec<Line> = BITCOIN_LOGO.iter()
                     .map(|&l| Line::from(Span::styled(l, Style::default().fg(Color::Rgb(247, 147, 26)))))
                     .collect();
 
-                // Render Logo (Horizontal center is handled by Paragraph::alignment)
-                f.render_widget(
-                    Paragraph::new(logo_lines).alignment(Alignment::Center), 
-                    inner_layout[1]
-                );
+                f.render_widget(Paragraph::new(logo_lines).alignment(Alignment::Center), vertical_chunks[1]);
+                
+                // Progress Bar or Status
+                let progress = nodes.iter().map(|n| n.byte_count.load(Ordering::SeqCst)).sum::<usize>();
+                let status_msg = if start_time.elapsed() < min_splash_duration {
+                    "ESTABLISHING GNOSTR ENVIRONMENT...".to_string()
+                } else {
+                    format!("WARMING UP TERMINAL DRIVERS ({} bytes)...", progress)
+                };
 
-                // Render Status Text
                 f.render_widget(
-                    Paragraph::new("INITIALIZING GNOSTR-BITCOIN...")
+                    Paragraph::new(status_msg)
                         .style(Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD))
                         .alignment(Alignment::Center),
-                    inner_layout[3]
+                    vertical_chunks[3]
                 );
             }
         })?;
@@ -181,24 +183,4 @@ async fn main() -> anyhow::Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     Ok(())
-}
-
-fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
-    let popup_layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage((100 - percent_y) / 2),
-            Constraint::Percentage(percent_y),
-            Constraint::Percentage((100 - percent_y) / 2),
-        ])
-        .split(r);
-
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage((100 - percent_x) / 2),
-            Constraint::Percentage(percent_x),
-            Constraint::Percentage((100 - percent_x) / 2),
-        ])
-        .split(popup_layout[1])[1]
 }
