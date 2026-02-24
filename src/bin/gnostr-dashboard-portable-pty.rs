@@ -1,4 +1,3 @@
-
 // src/bin/gnostr_dashboard.rs
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
@@ -21,6 +20,9 @@ use std::{
     time::{Duration, Instant},
 };
 use vt100::Parser;
+
+// Standard Bitcoin Orange: #F7931A
+const BITCOIN_ORANGE: Color = Color::Rgb(247, 147, 26);
 
 const BITCOIN_LOGO: [&str; 15] = [
     "⠀⠀⠀⠀⠀⠀⠀⠀⣀⣤⣴⣶⣾⣿⣿⣿⣿⣷⣶⣦⣤⣀⠀⠀⠀⠀⠀⠀⠀⠀",
@@ -66,8 +68,9 @@ impl TuiNode {
         cmd.args(args);
         cmd.cwd(cwd); 
         cmd.env("TERM", "xterm-256color");
-        let _child = self.pty_pair.slave.spawn_command(cmd).expect("failed to spawn command");
+        cmd.env("COLORTERM", "truecolor");
 
+        let _child = self.pty_pair.slave.spawn_command(cmd).expect("failed to spawn command");
         let mut reader = self.pty_pair.master.try_clone_reader().expect("failed to clone reader");
         let parser = Arc::clone(&self.parser);
         let byte_count = Arc::clone(&self.byte_count);
@@ -84,17 +87,11 @@ impl TuiNode {
         Ok(())
     }
 
-    // CRITICAL: Updated resize logic to handle horizontal stretch
     fn resize(&self, w: u16, h: u16) {
         let mut p = self.parser.lock().unwrap();
         if p.screen().size() != (h, w) {
             p.set_size(h, w);
-            let _ = self.pty_pair.master.resize(PtySize {
-                rows: h,
-                cols: w,
-                pixel_width: 0,
-                pixel_height: 0,
-            });
+            let _ = self.pty_pair.master.resize(PtySize { rows: h, cols: w, pixel_width: 0, pixel_height: 0 });
         }
     }
 }
@@ -116,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
 
     let start_time = Instant::now();
     let min_splash_duration = Duration::from_secs(5);
-    let byte_threshold = 2000;
+    let byte_threshold = 2500; // Ensuring build logs finish
 
     loop {
         terminal.draw(|f| {
@@ -125,44 +122,44 @@ async fn main() -> anyhow::Result<()> {
                             && start_time.elapsed() > min_splash_duration;
 
             if all_ready {
-                // STRETCHED DASHBOARD: Vertical layout with full width chunks
+                // DASHBOARD VIEW
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Percentage(48), // Upper Node
-                        Constraint::Min(2),         // Separator/Gap
-                        Constraint::Percentage(48)  // Lower Node
+                        Constraint::Percentage(48),
+                        Constraint::Min(2),
+                        Constraint::Percentage(48)
                     ])
                     .split(area);
 
                 for (idx, &chunk_idx) in [0, 2].iter().enumerate() {
                     let chunk = chunks[chunk_idx];
-                    
-                    // Inform the PTY and Parser of the new dimensions
                     nodes[idx].resize(chunk.width, chunk.height);
                     
                     let p = nodes[idx].parser.lock().unwrap();
                     let screen = p.screen();
                     let mut lines = Vec::new();
-
                     for row in 0..screen.size().0 {
                         let mut spans = Vec::new();
                         for col in 0..screen.size().1 {
                             if let Some(cell) = screen.cell(row, col) {
-                                let style = Style::default()
-                                    .fg(map_vt_color(cell.fgcolor()))
-                                    .bg(map_vt_color(cell.bgcolor()));
-                                spans.push(Span::styled(cell.contents().to_string(), style));
+                                spans.push(Span::styled(
+                                    cell.contents().to_string(),
+                                    Style::default()
+                                        .fg(map_vt_color(cell.fgcolor()))
+                                        .bg(map_vt_color(cell.bgcolor()))
+                                ));
                             }
                         }
                         lines.push(Line::from(spans));
                     }
-                    // Paragraph naturally fills the horizontal space of the Rect
+                    // This Paragraph fills the full width of the 'chunk'
                     f.render_widget(Paragraph::new(lines), chunk);
                 }
             } else {
-                // SPLASH VIEW (Persisted)
+                // SPLASH VIEW
                 f.render_widget(Clear, area);
+                
                 let vertical_chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
@@ -174,13 +171,14 @@ async fn main() -> anyhow::Result<()> {
                     ])
                     .split(area);
 
+                // Apply Orange Style to the Logo
                 let logo_lines: Vec<Line> = BITCOIN_LOGO.iter()
-                    .map(|&l| Line::from(Span::styled(l, Style::default().fg(Color::Rgb(247, 147, 26)))))
+                    .map(|&l| Line::from(Span::styled(l, Style::default().fg(BITCOIN_ORANGE))))
                     .collect();
 
                 f.render_widget(Paragraph::new(logo_lines).alignment(Alignment::Center), vertical_chunks[1]);
                 f.render_widget(
-                    Paragraph::new("WARMING UP GNOSTR ENVIRONMENT...")
+                    Paragraph::new("INITIALIZING GNOSTR...")
                         .style(Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD))
                         .alignment(Alignment::Center),
                     vertical_chunks[3]
