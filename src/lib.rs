@@ -321,7 +321,7 @@ mod tests {
 
     #[test]
     fn test_build_version_message() -> Result<()> {
-        let (version_msg, payload_len) = p2p::build_version_message()?;
+        let (version_msg, payload_len) = p2p::build_version_message(crate::PROTOCOL_VERSION)?;
 
         assert_eq!(&version_msg[0..4], MAGIC_BYTES);
         assert_eq!(str::from_utf8(&version_msg[4..11])?, "version");
