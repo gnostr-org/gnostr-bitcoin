@@ -1,3 +1,4 @@
+
 // src/bin/gnostr_dashboard.rs
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
@@ -42,7 +43,7 @@ const BITCOIN_LOGO: [&str; 15] = [
 struct TuiNode {
     parser: Arc<Mutex<Parser>>,
     pty_pair: portable_pty::PtyPair,
-    byte_count: Arc<AtomicUsize>, // Count bytes to gauge "real" output
+    byte_count: Arc<AtomicUsize>,
 }
 
 impl TuiNode {
@@ -75,13 +76,26 @@ impl TuiNode {
             let mut buf = [0u8; 8192];
             while let Ok(n) = reader.read(&mut buf) {
                 if n == 0 { break; }
-                // Accumulate byte count
                 byte_count.fetch_add(n, Ordering::SeqCst);
                 let mut p = parser.lock().unwrap();
                 p.process(&buf[..n]);
             }
         });
         Ok(())
+    }
+
+    // CRITICAL: Updated resize logic to handle horizontal stretch
+    fn resize(&self, w: u16, h: u16) {
+        let mut p = self.parser.lock().unwrap();
+        if p.screen().size() != (h, w) {
+            p.set_size(h, w);
+            let _ = self.pty_pair.master.resize(PtySize {
+                rows: h,
+                cols: w,
+                pixel_width: 0,
+                pixel_height: 0,
+            });
+        }
     }
 }
 
@@ -91,7 +105,7 @@ async fn main() -> anyhow::Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
 
-    let nodes = vec![TuiNode::new(80, 24), TuiNode::new(80, 24)];
+    let nodes = vec![TuiNode::new(120, 24), TuiNode::new(120, 24)];
     let project_root = std::env::current_dir()?;
 
     for (i, node) in nodes.iter().enumerate() {
@@ -101,44 +115,54 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let start_time = Instant::now();
-    let min_splash_duration = Duration::from_secs(5); // Increased for stability
-    let byte_threshold = 2000; // Require ~2KB of ANSI data before flipping
+    let min_splash_duration = Duration::from_secs(5);
+    let byte_threshold = 2000;
 
     loop {
         terminal.draw(|f| {
             let area = f.area();
-            
-            // LOGIC: All nodes must have surpassed the byte threshold AND the timer must be up
             let all_ready = nodes.iter().all(|n| n.byte_count.load(Ordering::SeqCst) > byte_threshold) 
                             && start_time.elapsed() > min_splash_duration;
 
             if all_ready {
-                // --- DASHBOARD LAYER ---
+                // STRETCHED DASHBOARD: Vertical layout with full width chunks
                 let chunks = Layout::default()
                     .direction(Direction::Vertical)
-                    .constraints([Constraint::Percentage(48), Constraint::Min(2), Constraint::Percentage(48)])
+                    .constraints([
+                        Constraint::Percentage(48), // Upper Node
+                        Constraint::Min(2),         // Separator/Gap
+                        Constraint::Percentage(48)  // Lower Node
+                    ])
                     .split(area);
 
                 for (idx, &chunk_idx) in [0, 2].iter().enumerate() {
                     let chunk = chunks[chunk_idx];
+                    
+                    // Inform the PTY and Parser of the new dimensions
+                    nodes[idx].resize(chunk.width, chunk.height);
+                    
                     let p = nodes[idx].parser.lock().unwrap();
                     let screen = p.screen();
                     let mut lines = Vec::new();
+
                     for row in 0..screen.size().0 {
                         let mut spans = Vec::new();
                         for col in 0..screen.size().1 {
                             if let Some(cell) = screen.cell(row, col) {
-                                spans.push(Span::raw(cell.contents().to_string()));
+                                let style = Style::default()
+                                    .fg(map_vt_color(cell.fgcolor()))
+                                    .bg(map_vt_color(cell.bgcolor()));
+                                spans.push(Span::styled(cell.contents().to_string(), style));
                             }
                         }
                         lines.push(Line::from(spans));
                     }
+                    // Paragraph naturally fills the horizontal space of the Rect
                     f.render_widget(Paragraph::new(lines), chunk);
                 }
             } else {
-                // --- PERSISTENT SPLASH LAYER ---
+                // SPLASH VIEW (Persisted)
                 f.render_widget(Clear, area);
-
                 let vertical_chunks = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
@@ -155,17 +179,8 @@ async fn main() -> anyhow::Result<()> {
                     .collect();
 
                 f.render_widget(Paragraph::new(logo_lines).alignment(Alignment::Center), vertical_chunks[1]);
-                
-                // Progress Bar or Status
-                let progress = nodes.iter().map(|n| n.byte_count.load(Ordering::SeqCst)).sum::<usize>();
-                let status_msg = if start_time.elapsed() < min_splash_duration {
-                    "ESTABLISHING GNOSTR ENVIRONMENT...".to_string()
-                } else {
-                    format!("WARMING UP TERMINAL DRIVERS ({} bytes)...", progress)
-                };
-
                 f.render_widget(
-                    Paragraph::new(status_msg)
+                    Paragraph::new("WARMING UP GNOSTR ENVIRONMENT...")
                         .style(Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD))
                         .alignment(Alignment::Center),
                     vertical_chunks[3]
@@ -183,4 +198,12 @@ async fn main() -> anyhow::Result<()> {
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
     Ok(())
+}
+
+fn map_vt_color(c: vt100::Color) -> Color {
+    match c {
+        vt100::Color::Default => Color::Reset,
+        vt100::Color::Idx(i) => Color::Indexed(i),
+        vt100::Color::Rgb(r, g, b) => Color::Rgb(r, g, b),
+    }
 }
